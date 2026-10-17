@@ -12,6 +12,7 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
 | 资产文件 | 用途与规范 | 规格说明 |
 | :--- | :--- | :--- |
 | **`assets/AppIcon.png`** | **唯一官方定版 Logo / App Icon** | 1024×1024 像素，严格遵循 Apple HIG 规范的 824px Squircle（超椭圆）与外围 100% 透明 Alpha 通道，内嵌原生高斯阴影。用于所有应用图标、头像、宣传图角标。 |
+| **`assets/logo.webp`** | **Web / README 高性能轻量 Logo** | 512×512 像素，仅 28KB 高性能 WebP，保留完整透明通道与柔和投影，供 GitHub README 与网页端毫秒级秒开渲染。 |
 | **`assets/logo-source.jpg`** | **原版高清母稿** | 1024×1024 高分辨率未裁切母稿，供后续制作宣传海报、全屏背景、Banner 或衍生宣传物料时提取素材。 |
 | **`assets/template.html`** | **日终心流报告模板** | 1:1 复刻 Alma 的 180 格（07:00–22:00）GitHub 绿阶心流矩阵与任务雷达图。 |
 

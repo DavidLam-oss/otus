@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/AppIcon.png" alt="Otus Logo" width="140" />
+  <img src="assets/logo.webp" alt="Otus Logo" width="140" />
 </p>
 
 <h1 align="center">Otus (鸺鹠)</h1>
