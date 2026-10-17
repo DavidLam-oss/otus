@@ -13,6 +13,16 @@ import { ReportRenderer } from "./report.ts";
 
 const PID_FILE = path.join(DATA_DIR, "otus.pid");
 
+function resolveDateKey(input?: string): string | undefined {
+  if (!input) return undefined;
+  if (input === "yesterday" || input === "yd") {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+  return input;
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || "status";
@@ -51,9 +61,46 @@ async function main() {
       analyzer.start();
       rotator.start();
 
-      // 定时日终报告生成器：每 30 分钟检查一次，若在晚间 21:00 之后自动生成当天的 HTML 报告与数据库总结
+      // 日终报告与昨日自动补漏生成器
       const summarizer = new ActivitySummarizer(store, defaultConfig);
       const renderer = new ReportRenderer(store, defaultConfig);
+
+      const checkAndBackfillYesterdayReport = async () => {
+        try {
+          const now = new Date();
+          const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+          const yKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, "0")}-${String(yesterday.getDate()).padStart(2, "0")}`;
+
+          const startOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate(), 0, 0, 0).getTime();
+          const endOfYesterday = new Date(yesterday.getFullYear(), yesterday.getMonth(), yesterday.getDate() + 1, 0, 0, 0).getTime();
+
+          // 检查昨天是否有记录的 session
+          const ySessions = store.listSessions({ since: startOfYesterday, until: endOfYesterday, limit: 1 });
+          if (ySessions.length === 0) return;
+
+          // 检查昨天的 HTML 报告是否已落盘导出
+          const reportPath = path.join(defaultConfig.outputDir, "reports", `${yKey}.html`);
+          if (!fs.existsSync(reportPath)) {
+            console.log(`[Otus] Catch-up: Detected missing daily report for yesterday (${yKey}). Generating in background...`);
+            await renderer.renderHtmlReport(yKey);
+            console.log(`[Otus] Catch-up: Successfully generated report for ${yKey}`);
+          }
+        } catch (err) {
+          console.error("[Otus] Catch-up report generation error:", err);
+        }
+      };
+
+      // 1. 守护进程启动后延迟 5 秒检查一次昨日报告
+      setTimeout(() => {
+        checkAndBackfillYesterdayReport().catch(() => {});
+      }, 5000);
+
+      // 2. 电脑休眠唤醒 / 屏幕解锁时，自动触发补漏检查
+      recorder.onWake = () => {
+        checkAndBackfillYesterdayReport().catch(() => {});
+      };
+
+      // 3. 定时巡检：每 30 分钟检查一次（晚间 21:00+ 生成当天报告，同时自动补漏昨日报告）
       const autoReportTimer = setInterval(() => {
         const now = new Date();
         const hour = now.getHours();
@@ -63,6 +110,8 @@ async function main() {
             console.error("[Otus] Auto evening report generation error:", err)
           );
         }
+        // 白天及任意时段检查昨日报告是否有遗漏未生成（如昨夜提前合盖或关机）
+        checkAndBackfillYesterdayReport().catch(() => {});
       }, 30 * 60 * 1000);
 
       const shutdown = () => {
@@ -167,7 +216,7 @@ async function main() {
     }
 
     case "report": {
-      const dateKey = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+      const dateKey = resolveDateKey(args[1] && !args[1].startsWith("--") ? args[1] : undefined);
       const force = args.includes("--force");
       const json = args.includes("--json");
       const summarizer = new ActivitySummarizer(store, defaultConfig);
@@ -182,7 +231,7 @@ async function main() {
     }
 
     case "export": {
-      const dateKey = args[1] && !args[1].startsWith("--") ? args[1] : undefined;
+      const dateKey = resolveDateKey(args[1] && !args[1].startsWith("--") ? args[1] : undefined);
       const renderer = new ReportRenderer(store, defaultConfig);
       const { outputPath } = await renderer.renderHtmlReport(dateKey);
       console.log(`[Otus] HTML Report generated: ${outputPath}`);

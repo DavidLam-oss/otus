@@ -48,6 +48,7 @@ export class ActivityRecorderService {
   private imgDiffBinPath: string = "";
 
   public onSessionClosed?: (session: ActivitySession) => void;
+  public onWake?: () => void;
 
   constructor(store: ActivityStore, config: Partial<OtusConfig> = {}) {
     this.store = store;
@@ -263,6 +264,11 @@ export class ActivityRecorderService {
       this.prevSnapshotPath = null;
       const s = this.ensureSession(type);
       this.store.insertEvent(s.id, { timestamp: ts, kind: type, appName: this.frontmost.appName });
+      try {
+        this.onWake?.();
+      } catch (err) {
+        console.error("[ActivityRecorder] onWake handler error:", err);
+      }
       return;
     }
 
