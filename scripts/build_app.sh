@@ -106,7 +106,12 @@ cat << 'EOF' > "$MACOS_DIR/Otus"
 #!/usr/bin/env bash
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../Resources/app" && pwd)"
 export PATH="/usr/local/bin:/opt/homebrew/bin:$PATH"
-exec "$DIR/bin/otus" "$@"
+
+if [ $# -eq 0 ]; then
+  exec "$DIR/bin/otus" open-latest
+else
+  exec "$DIR/bin/otus" "$@"
+fi
 EOF
 chmod +x "$MACOS_DIR/Otus"
 chmod +x "$APP_DIR/bin/otus"

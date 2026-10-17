@@ -10,6 +10,7 @@ import { ActivityAnalyzer } from "./analyzer.ts";
 import { ActivitySummarizer } from "./summarizer.ts";
 import { ActivityRotator } from "./rotator.ts";
 import { ReportRenderer } from "./report.ts";
+import { sendDesktopNotification } from "./notifier.ts";
 
 const PID_FILE = path.join(DATA_DIR, "otus.pid");
 
@@ -84,6 +85,14 @@ async function main() {
             console.log(`[Otus] Catch-up: Detected missing daily report for yesterday (${yKey}). Generating in background...`);
             await renderer.renderHtmlReport(yKey);
             console.log(`[Otus] Catch-up: Successfully generated report for ${yKey}`);
+
+            const summary = store.getSummary("daily", yKey);
+            const stats = summary?.stats?.reportStats || {};
+            sendDesktopNotification({
+              title: "🦉 Otus 个人折腾日记",
+              subtitle: `${yKey} 报告已自动就绪`,
+              message: `昨日活跃 ${stats.totalActiveMinutes || 0}m，${stats.analyzedCount || 0} 个实质折腾已归类为 ${stats.clusterCount || 0} 个核心主题。`
+            });
           }
         } catch (err) {
           console.error("[Otus] Catch-up report generation error:", err);
@@ -104,9 +113,18 @@ async function main() {
       const autoReportTimer = setInterval(() => {
         const now = new Date();
         const hour = now.getHours();
-        // 晚间 21:00 至 23:59 自动静默生成当天日终报告
+        // 晚间 21:00 至 23:59 自动静默生成当天日终报告并推送系统通知
         if (hour >= 21) {
-          renderer.renderHtmlReport().catch((err) =>
+          renderer.renderHtmlReport().then(() => {
+            const today = now.toISOString().slice(0, 10);
+            const summary = store.getSummary("daily", today);
+            const stats = summary?.stats?.reportStats || {};
+            sendDesktopNotification({
+              title: "🦉 Otus 个人折腾日记",
+              subtitle: "今日日终报告已生成",
+              message: `今日活跃 ${stats.totalActiveMinutes || 0}m，${stats.analyzedCount || 0} 个实质折腾已归类为 ${stats.clusterCount || 0} 个核心主题。`
+            });
+          }).catch((err) =>
             console.error("[Otus] Auto evening report generation error:", err)
           );
         }
@@ -238,6 +256,28 @@ async function main() {
       try {
         execSync(`open "${outputPath}"`);
       } catch {}
+      break;
+    }
+
+    case "open-latest": {
+      const reportsDir = path.join(defaultConfig.outputDir, "reports");
+      fs.mkdirSync(reportsDir, { recursive: true });
+      const htmlFiles = fs
+        .readdirSync(reportsDir)
+        .filter((f) => f.endsWith(".html"))
+        .sort()
+        .reverse();
+
+      if (htmlFiles.length > 0) {
+        const latestPath = path.join(reportsDir, htmlFiles[0]);
+        console.log(`[Otus] Opening latest report: ${latestPath}`);
+        try { execSync(`open "${latestPath}"`); } catch {}
+      } else {
+        const renderer = new ReportRenderer(store, defaultConfig);
+        const { outputPath } = await renderer.renderHtmlReport();
+        console.log(`[Otus] Generated and opening report: ${outputPath}`);
+        try { execSync(`open "${outputPath}"`); } catch {}
+      }
       break;
     }
 
