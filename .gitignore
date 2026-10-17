@@ -1,0 +1,39 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# macOS specific
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Local logs and outputs
+logs/
+*.jsonl
+outputs/
+*.html
+!assets/template.html
+*.log
+*.tmp
+tmp/
+
+# Environments & Dependencies
+.env
+.env.*
+.venv
+env/
+venv/
+ENV/
+node_modules/
+
+# Local planning, process notes and research docs
+docs/
+*.scratch.*
+
+# IDE & Editor caches
+.idea/
+.vscode/
+*.swp
+*.swo
+

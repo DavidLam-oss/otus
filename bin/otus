@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+
+# 解析符号链接以获取真实的项目根路径
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" >/dev/null 2>&1 && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+PROJECT_DIR="$(cd -P "$(dirname "$SOURCE")/.." >/dev/null 2>&1 && pwd)"
+
+# Node 26 完美原生内置 node:sqlite 和 --experimental-strip-types
+if command -v node >/dev/null 2>&1; then
+  exec node --experimental-strip-types "$PROJECT_DIR/src/index.ts" "$@"
+elif command -v bun >/dev/null 2>&1; then
+  exec bun run "$PROJECT_DIR/src/index.ts" "$@"
+else
+  echo "Error: Neither Node.js (>= 22) nor Bun found." >&2
+  exit 1
+fi

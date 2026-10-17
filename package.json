@@ -1,0 +1,20 @@
+{
+  "name": "otus",
+  "version": "1.0.0",
+  "description": "Ultra-lightweight macOS background activity recorder & daily tinkering journal generator",
+  "type": "module",
+  "main": "src/index.ts",
+  "bin": {
+    "otus": "bin/otus"
+  },
+  "scripts": {
+    "start": "node --experimental-strip-types src/index.ts daemon",
+    "status": "node --experimental-strip-types src/index.ts status",
+    "report": "node --experimental-strip-types src/index.ts report",
+    "export": "node --experimental-strip-types src/index.ts export"
+  },
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "license": "MIT"
+}

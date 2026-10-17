@@ -1,0 +1,1204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Otus 个人折腾日记 · <!--__DATE__--></title>
+<style>
+  :root {
+    --bg: #090d13;
+    --panel: rgba(22, 27, 34, 0.78);
+    --panel-solid: #161b22;
+    --panel2: #1c222b;
+    --border: rgba(48, 54, 61, 0.75);
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --dim: #6e7681;
+
+    /* GitHub 原生感绿色阶 (0m -> 5m) */
+    --l0: #131820;
+    --l1: #0e4429;
+    --l2: #006d32;
+    --l3: #26a641;
+    --l4: #39d353;
+
+    /* 主题色板 */
+    --accent: #58a6ff;
+    --accent2: #a371f7;
+    --warn: #d29922;
+    --good: #3fb950;
+    --pink: #f778ba;
+    --cyan: #79c0ff;
+
+    --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Hiragino Sans GB', sans-serif;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    background-image:
+      radial-gradient(ellipse 80% 50% at 50% -15%, rgba(88, 166, 255, 0.11), transparent),
+      radial-gradient(ellipse 60% 40% at 85% 25%, rgba(163, 113, 247, 0.06), transparent);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.6;
+    padding: 36px 20px 90px;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap { max-width: 1000px; margin: 0 auto; }
+
+  /* ---- 头部 ---- */
+  .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    gap: 16px;
+    margin-bottom: 26px;
+    padding-bottom: 18px;
+    border-bottom: 1px solid var(--border);
+  }
+  .head-left h1 {
+    font-size: 25px;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    display: flex;
+    align-items: center;
+    gap: 11px;
+  }
+  .head-left h1 .dot {
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--good);
+    box-shadow: 0 0 12px var(--good);
+  }
+  .head-left .sub { color: var(--muted); font-size: 13px; margin-top: 5px; }
+  .head-right {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--muted);
+    background: var(--panel);
+    padding: 6px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+  }
+
+  /* ---- KPI 指标卡 ---- */
+  .stats {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 14px;
+    margin-bottom: 30px;
+  }
+  .stat {
+    background: var(--panel);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 15px 18px;
+    transition: transform 0.2s ease, border-color 0.2s ease;
+  }
+  .stat:hover {
+    transform: translateY(-2px);
+    border-color: rgba(139, 148, 158, 0.45);
+  }
+  .stat .top-row { display: flex; justify-content: space-between; align-items: baseline; }
+  .stat .n { font-size: 25px; font-weight: 700; font-family: var(--mono); letter-spacing: -0.03em; }
+  .stat .badge {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--muted);
+  }
+  .stat .l { font-size: 12.5px; color: var(--muted); margin-top: 3px; }
+  .stat .sub-l { font-size: 11px; color: var(--dim); margin-top: 7px; font-family: var(--mono); }
+  .stat .n.blue { color: var(--accent); }
+  .stat .n.green { color: var(--good); }
+  .stat .n.purple { color: var(--accent2); }
+  .stat .n.warn { color: var(--warn); }
+
+  /* ---- 章节标题栏 ---- */
+  .sec-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin: 32px 0 12px;
+  }
+  h2 {
+    font-size: 15.5px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 9px;
+  }
+  h2::before {
+    content: '';
+    width: 4px;
+    height: 15px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2));
+    border-radius: 2px;
+  }
+  .sec-controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  /* 模式切换开关 */
+  .mode-switch {
+    display: inline-flex;
+    background: var(--panel-solid);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 2px;
+  }
+  .mode-btn {
+    background: transparent;
+    border: none;
+    color: var(--muted);
+    font-size: 11.5px;
+    font-family: var(--sans);
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: all 0.15s;
+  }
+  .mode-btn:hover { color: var(--text); }
+  .mode-btn.active {
+    background: var(--panel2);
+    color: var(--text);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  }
+  .mode-dot-green { width: 7px; height: 7px; border-radius: 2px; background: var(--l4); }
+  .mode-dot-multi {
+    width: 7px; height: 7px; border-radius: 2px;
+    background: conic-gradient(var(--good), var(--accent), var(--pink), var(--warn), var(--good));
+  }
+
+  .reset-btn {
+    display: none;
+    background: rgba(88, 166, 255, 0.14);
+    color: var(--accent);
+    border: 1px solid rgba(88, 166, 255, 0.35);
+    padding: 4px 10px;
+    border-radius: 7px;
+    font-size: 11.5px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .reset-btn:hover { background: rgba(88, 166, 255, 0.24); }
+  .reset-btn.active { display: inline-flex; align-items: center; gap: 4px; }
+
+  .card {
+    background: var(--panel);
+    backdrop-filter: blur(12px);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 22px 24px;
+  }
+
+  /* ---- 方案 A2：左正方形热力矩阵 + 右侧心流雷达 ---- */
+  .hm-layout {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 32px;
+    align-items: center;
+  }
+  .hm-left {
+    overflow-x: auto;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+  /* 严格正方形网格：左侧刻度列 32px + 15列 * 22px */
+  .hm-matrix {
+    display: grid;
+    grid-template-columns: 32px repeat(15, 22px);
+    gap: 4px;
+    align-items: center;
+    justify-content: center;
+  }
+  .hm-corner {
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--dim);
+    text-align: right;
+    padding-right: 4px;
+    user-select: none;
+  }
+  .hm-col-head {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--muted);
+    text-align: center;
+    font-weight: 600;
+    padding-bottom: 3px;
+    user-select: none;
+  }
+  .hm-row-label {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    text-align: right;
+    padding-right: 5px;
+    line-height: 1;
+    user-select: none;
+  }
+  /* 严格 22x22 正方形，像 GitHub 一样干净 */
+  .hm-cell {
+    width: 22px;
+    height: 22px;
+    border-radius: 4px;
+    background: var(--l0);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    transition: transform 0.12s ease, opacity 0.2s ease, background-color 0.2s ease, box-shadow 0.12s ease;
+  }
+  .hm-cell.on { cursor: pointer; }
+  .hm-cell:hover {
+    transform: scale(1.24);
+    z-index: 10;
+    box-shadow: 0 0 0 1.5px var(--text), 0 4px 10px rgba(0, 0, 0, 0.55);
+  }
+  .hm-cell.dimmed {
+    opacity: 0.14;
+    filter: grayscale(85%);
+  }
+  .hm-cell.topic-match {
+    box-shadow: 0 0 0 1.5px rgba(255, 255, 255, 0.85);
+    z-index: 3;
+  }
+
+  /* 底部小时汇总行（不折行） */
+  .hm-summary-label {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--dim);
+    text-align: right;
+    padding-right: 5px;
+    margin-top: 6px;
+    white-space: nowrap;
+  }
+  .hm-hour-stat {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+  }
+  .hm-hour-bar-bg {
+    width: 18px;
+    height: 3.5px;
+    background: var(--l0);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .hm-hour-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .hm-hour-val {
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--dim);
+    letter-spacing: -0.03em;
+  }
+
+  /* 右侧：心流雷达面板 (A2 黄金搭档) */
+  .hm-right {
+    border-left: 1px solid var(--border);
+    padding-left: 28px;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    gap: 18px;
+    height: 100%;
+  }
+  .radar-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .radar-title span {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    font-weight: 400;
+  }
+  /* 昼夜三段精力分布 */
+  .phase-list { display: flex; flex-direction: column; gap: 10px; }
+  .phase-item {
+    background: rgba(13, 17, 23, 0.55);
+    border: 1px solid rgba(48, 54, 61, 0.55);
+    border-radius: 8px;
+    padding: 9px 12px;
+  }
+  .phase-top {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    margin-bottom: 5px;
+  }
+  .phase-name { color: var(--text); font-weight: 500; }
+  .phase-time { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-left: 4px; }
+  .phase-val { font-family: var(--mono); font-size: 11.5px; color: var(--muted); }
+  .phase-bar { height: 5px; background: var(--l0); border-radius: 3px; overflow: hidden; }
+  .phase-fill { height: 100%; border-radius: 3px; }
+
+  /* 核心心流指标卡 */
+  .streak-box {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+  .streak-card {
+    background: rgba(13, 17, 23, 0.55);
+    border: 1px solid rgba(48, 54, 61, 0.55);
+    border-radius: 8px;
+    padding: 10px 12px;
+  }
+  .streak-card .k { font-size: 11px; color: var(--muted); }
+  .streak-card .v {
+    font-family: var(--mono);
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--text);
+    margin-top: 2px;
+  }
+  .streak-card .s { font-size: 10.5px; color: var(--dim); font-family: var(--mono); margin-top: 2px; }
+
+  /* 底部动态图例栏 */
+  .hm-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid rgba(48, 54, 61, 0.5);
+  }
+  .hm-note { font-size: 12px; color: var(--muted); }
+  .hm-note strong { color: var(--text); }
+  .helegend {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--dim);
+    font-family: var(--mono);
+    flex-wrap: wrap;
+  }
+  .helegend .cell {
+    width: 13px;
+    height: 13px;
+    border-radius: 3px;
+    border: 1px solid rgba(255,255,255,0.06);
+  }
+  .legend-topic-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-left: 6px;
+    color: var(--muted);
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.15s;
+  }
+  .legend-topic-item:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+
+  /* ---- 双栏布局：主题分布 + 时间线 ---- */
+  .grid-2col {
+    display: grid;
+    grid-template-columns: 330px 1fr;
+    gap: 16px;
+    align-items: start;
+  }
+
+  .bar-item {
+    padding: 9px 10px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s ease, opacity 0.2s ease;
+    border: 1px solid transparent;
+    margin-bottom: 6px;
+  }
+  .bar-item:last-child { margin-bottom: 0; }
+  .bar-item:hover { background: rgba(255, 255, 255, 0.04); }
+  .bar-item.active {
+    background: rgba(88, 166, 255, 0.08);
+    border-color: rgba(88, 166, 255, 0.35);
+  }
+  .bar-item.dimmed { opacity: 0.32; }
+  .bar-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 13px;
+    margin-bottom: 6px;
+  }
+  .bar-name { display: flex; align-items: center; gap: 7px; font-weight: 500; }
+  .bar-dot { width: 8px; height: 8px; border-radius: 2.5px; }
+  .bar-meta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .bar-track { height: 7px; background: var(--panel2); border-radius: 4px; overflow: hidden; }
+  .bar-fill { height: 100%; border-radius: 4px; transition: width 0.5s ease; }
+
+  /* 时间线与顶部过滤器 */
+  .tl-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding-bottom: 12px;
+    margin-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .filter-pills { display: flex; flex-wrap: wrap; gap: 6px; }
+  .pill {
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 20px;
+    background: var(--panel2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .pill .p-dot { width: 6px; height: 6px; border-radius: 50%; }
+  .pill:hover { color: var(--text); border-color: var(--muted); }
+  .pill.active {
+    background: var(--text);
+    color: #090d13;
+    border-color: var(--text);
+    font-weight: 600;
+  }
+  .tl-count { font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+
+  .tl {
+    position: relative;
+    padding-left: 22px;
+    max-height: 480px;
+    overflow-y: auto;
+    padding-right: 6px;
+  }
+  .tl::-webkit-scrollbar { width: 6px; }
+  .tl::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .tl::before {
+    content: '';
+    position: absolute;
+    left: 6px;
+    top: 8px;
+    bottom: 8px;
+    width: 2px;
+    background: linear-gradient(180deg, var(--accent), var(--accent2), rgba(88,166,255,0.1));
+    opacity: 0.35;
+  }
+  .tl .item {
+    position: relative;
+    padding: 8px 10px;
+    border-radius: 7px;
+    border-bottom: 1px dashed rgba(48, 54, 61, 0.45);
+    scroll-margin-top: 80px;
+    transition: background 0.15s;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .tl .item:last-child { border-bottom: none; }
+  .tl .item::before {
+    content: '';
+    position: absolute;
+    left: -20px;
+    top: 14px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--panel-solid);
+    border: 2px solid var(--accent);
+    z-index: 2;
+  }
+  .tl .item:hover { background: rgba(88, 166, 255, 0.06); }
+  .tl .item.highlight {
+    background: rgba(88, 166, 255, 0.18);
+    outline: 1px solid rgba(88, 166, 255, 0.4);
+  }
+  .tl .t { font-family: var(--mono); font-size: 12px; color: var(--accent); font-weight: 600; flex-shrink: 0; }
+  .tl .d {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--muted);
+    background: var(--panel2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    min-width: 34px;
+    text-align: center;
+  }
+  .tl .ti { font-size: 13px; color: var(--text); flex: 1; }
+  .topic {
+    font-size: 10px;
+    padding: 1px 7px;
+    border-radius: 20px;
+    font-family: var(--mono);
+    flex-shrink: 0;
+  }
+  .topic.rel { background: rgba(63,185,80,.15); color: var(--good); border: 1px solid rgba(63,185,80,.3); }
+  .topic.guard { background: rgba(88,166,255,.15); color: var(--accent); border: 1px solid rgba(88,166,255,.3); }
+  .topic.indent { background: rgba(210,153,34,.15); color: var(--warn); border: 1px solid rgba(210,153,34,.3); }
+  .topic.video { background: rgba(247,120,186,.15); color: var(--pink); border: 1px solid rgba(247,120,186,.3); }
+  .topic.magpie { background: rgba(163,113,247,.15); color: var(--accent2); border: 1px solid rgba(163,113,247,.3); }
+
+  /*__OTUS_TOPIC_CSS__*/
+
+  .item-head { display: flex; align-items: baseline; gap: 8px; width: 100%; }
+  .tl-details {
+    margin: 4px 0 2px 76px;
+    font-size: 11.5px;
+    color: var(--muted);
+    line-height: 1.5;
+    background: rgba(255, 255, 255, 0.025);
+    padding: 6px 10px;
+    border-radius: 6px;
+    border-left: 2px solid rgba(88, 166, 255, 0.4);
+  }
+  .tl-sub-hl { list-style: none; margin: 0; padding: 0; }
+  .tl-sub-hl li { margin: 2px 0; color: #a5d6ff; }
+  .tl-sub-ent { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
+  .badge-pr { font-family: var(--mono); font-size: 10px; color: #58a6ff; background: rgba(88, 166, 255, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(88, 166, 255, 0.3); }
+  .badge-iss { font-family: var(--mono); font-size: 10px; color: #d29922; background: rgba(210, 153, 34, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.3); }
+  .badge-dec { font-family: var(--mono); font-size: 10px; color: #3fb950; background: rgba(63, 185, 80, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(63, 185, 80, 0.3); }
+  
+  /* 项目深度复盘区块样式 */
+  .j-theme-head { display: flex; align-items: center; gap: 8px; margin: 20px 0 6px; }
+  .j-theme-head h3 { font-size: 16px; font-weight: 600; color: var(--text); }
+  .j-theme-tag { width: 4px; height: 16px; border-radius: 2px; background: var(--accent); }
+  .j-theme-meta { font-family: var(--mono); font-size: 11.5px; color: var(--dim); margin-bottom: 8px; }
+  .j-prose { font-size: 13.5px; color: var(--text); line-height: 1.7; margin-bottom: 8px; }
+  .j-section-lbl { font-size: 12.5px; font-weight: 600; color: var(--accent); margin: 8px 0 4px; }
+  .j-bullet { font-size: 13px; color: var(--muted); margin: 3px 0 3px 20px; line-height: 1.6; }
+
+  /* ---- 复盘洞察网格 ---- */
+  .ins-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+  .ins {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-top: 3px solid var(--warn);
+    border-radius: 10px;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ins.good { border-top-color: var(--good); }
+  .ins.ai { border-top-color: var(--accent2); }
+  .ins .h { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+  .ins .b { font-size: 13px; color: var(--muted); line-height: 1.7; }
+  .ins .b strong { color: var(--text); font-weight: 600; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    padding: 1px 8px;
+    border-radius: 20px;
+    background: var(--panel2);
+    color: var(--muted);
+    border: 1px solid var(--border);
+  }
+  code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--panel2);
+    padding: 1px 5px;
+    border-radius: 4px;
+    color: var(--cyan);
+  }
+
+  /* ---- 悬浮 Tooltip ---- */
+  #tooltip {
+    position: fixed;
+    pointer-events: none;
+    z-index: 1000;
+    background: rgba(13, 17, 23, 0.96);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(88, 166, 255, 0.4);
+    border-radius: 8px;
+    padding: 10px 12px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6);
+    font-size: 12px;
+    max-width: 290px;
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  #tooltip.show { opacity: 1; transform: translateY(0); }
+  .tt-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+    font-family: var(--mono);
+    font-weight: 600;
+    color: var(--text);
+    padding-bottom: 6px;
+    margin-bottom: 6px;
+    border-bottom: 1px solid var(--border);
+  }
+  .tt-head .tt-load { color: var(--good); font-size: 11px; }
+  .tt-task { color: var(--muted); font-size: 11.5px; line-height: 1.45; margin-top: 4px; }
+  .tt-hint { font-size: 10px; color: var(--dim); margin-top: 6px; font-family: var(--mono); }
+
+  .foot {
+    text-align: center;
+    color: var(--dim);
+    font-size: 12px;
+    margin-top: 48px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 880px) {
+    .hm-layout { grid-template-columns: 1fr; }
+    .hm-right { border-left: none; border-top: 1px solid var(--border); padding-left: 0; padding-top: 20px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .grid-2col { grid-template-columns: 1fr; }
+    .ins-grid { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <!--__OTUS_HEAD_AND_STATS__-->
+
+  <!-- 方案 A2：正方形热力矩阵 + 右侧心流雷达 -->
+  <div class="sec-head">
+    <h2>全天心流热力矩阵（Hour × 5-Min）</h2>
+    <div class="sec-controls">
+      <button class="reset-btn" id="resetFilter">✕ 清除主题过滤 (ESC)</button>
+      <div class="mode-switch" id="colorModeSwitch">
+        <button class="mode-btn active" data-mode="green"><span class="mode-dot-green"></span>专注度 (绿)</button>
+        <button class="mode-btn" data-mode="topic"><span class="mode-dot-multi"></span>主题光谱 (彩)</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="hm-layout">
+      <!-- 左侧：严格 1:1 正方形矩阵 -->
+      <div class="hm-left">
+        <div class="hm-matrix" id="hmMatrix"></div>
+      </div>
+
+      <!-- 右侧：A2 黄金搭档「今日心流雷达」 -->
+      <div class="hm-right">
+        <div>
+          <div class="radar-title">今日时段专注节律 <span>按 5m 切片自动聚合</span></div>
+          <div class="phase-list" id="phaseList"></div>
+        </div>
+
+        <!--__OTUS_STREAK_BOX__-->
+      </div>
+    </div>
+
+    <div class="hm-footer">
+      <div class="hm-note" id="hmNote">
+        每格代表 <strong>5 分钟正方形切片</strong>（横轴 07–21 点，纵轴 :00–:55 分）。点击右上角可切换<strong>「主题光谱」</strong>，或直接点击下方主题联动高亮。
+      </div>
+      <div class="helegend" id="hmLegend"></div>
+    </div>
+  </div>
+
+  <!-- 主题投入 + 联动时间线 -->
+  <div class="sec-head">
+    <h2>时间去哪了 & 全天时间线</h2>
+    <div class="sec-controls" style="font-size:12px;color:var(--muted)">点击任一主题条或胶囊，热力图将动态染为对应主题色</div>
+  </div>
+  <div class="grid-2col">
+    <!-- 左侧：主题投入 -->
+    <div class="card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;display:flex;justify-content:space-between;">
+        <span>按主题聚合时长（点击过滤）</span>
+        <span style="font-family:var(--mono)">总计 605m</span>
+      </div>
+      <div id="bars"></div>
+    </div>
+
+    <!-- 右侧：时间线 -->
+    <div class="card">
+      <div class="tl-toolbar">
+        <div class="filter-pills" id="filterPills"></div>
+        <div class="tl-count" id="tlCount"></div>
+      </div>
+      <div class="tl" id="tl"></div>
+    </div>
+  </div>
+
+  <!--__OTUS_THEMATIC_DEEP_DIVE__-->
+
+  <!-- 复盘与洞察 -->
+  <div class="sec-head">
+    <h2>工作流复盘与洞察</h2>
+  </div>
+  <div class="ins-grid">
+    <!--__OTUS_INSIGHTS_GRID__-->
+  </div>
+
+  <div class="foot">
+    Generated by Otus 🦉 · Local-First Native Work Journal · 数据源 ~/.local/share/otus
+  </div>
+</div>
+
+<!-- 悬浮提示框 -->
+<div id="tooltip"></div>
+
+<script>
+// ---- 1. 核心数据源（单一事实来源，供热力图与时间线动态共用） ----
+const START = 7, END = 22; // 07:00 -> 21:55 (15 小时列)
+const SPH = 12;            // 每小时 12 个 5分钟格
+const HOURS = END - START; // 15 列
+const nSlots = HOURS * SPH;
+
+// 主题字典：[显示名, CSS类名, 主题HEX色]
+const labels = /*__OTUS_LABELS__*/ {};
+
+const rawSlots = /*__OTUS_RAW_SLOTS__*/ [];
+
+const tlData = /*__OTUS_TL_DATA__*/ [];
+
+// ---- 2. 跨时段切片 + 从下方 tlData 动态提取每个格子的主导主题 ----
+const grid = new Array(nSlots).fill(0);
+const slotTasks = Array.from({ length: nSlots }, () => []);
+const slotTopicWeights = Array.from({ length: nSlots }, () => ({}));
+
+rawSlots.forEach(([h, m, v]) => {
+  let rem = v;
+  let curMin = (h - START) * 60 + m;
+  while (rem > 0) {
+    const slotIdx = Math.floor(curMin / 5);
+    if (slotIdx < 0 || slotIdx >= nSlots) break;
+    const avail = 5 - (curMin % 5);
+    const take = Math.min(rem, avail);
+    grid[slotIdx] = Math.min(5, grid[slotIdx] + take);
+    rem -= take;
+    curMin += take;
+  }
+});
+
+// 遍历下方时间线，动态计算每个 5分钟格子里各主题的权重时长
+tlData.forEach(([tStr, dStr, title, topicKey], idx) => {
+  const [h, m] = tStr.split(':').map(Number);
+  const dur = parseInt(dStr, 10) || 1;
+  let rem = dur;
+  let curMin = (h - START) * 60 + m;
+  while (rem > 0) {
+    const slotIdx = Math.floor(curMin / 5);
+    const avail = 5 - (curMin % 5);
+    const take = Math.min(rem, avail);
+    if (slotIdx >= 0 && slotIdx < nSlots) {
+      if (!slotTasks[slotIdx].some(x => x.idx === idx)) {
+        slotTasks[slotIdx].push({ idx, tStr, dStr, title, topicKey });
+      }
+      slotTopicWeights[slotIdx][topicKey] = (slotTopicWeights[slotIdx][topicKey] || 0) + take;
+    }
+    rem -= take;
+    curMin += take;
+  }
+});
+
+// 对没有直接匹配到 tlData 但有活跃度的邻近格子，自动继承最近一条时间线任务的主题
+let lastKnownTopic = 'magpie';
+const dominantTopicPerSlot = new Array(nSlots).fill('');
+for (let i = 0; i < nSlots; i++) {
+  const weights = slotTopicWeights[i];
+  const keys = Object.keys(weights);
+  if (keys.length > 0) {
+    keys.sort((a, b) => weights[b] - weights[a]);
+    dominantTopicPerSlot[i] = keys[0];
+    lastKnownTopic = keys[0];
+  } else if (grid[i] > 0) {
+    dominantTopicPerSlot[i] = lastKnownTopic;
+  }
+}
+
+const lvl = v => {
+  if (v <= 0) return 0;
+  if (v <= 1) return 1;
+  if (v <= 2.5) return 2;
+  if (v <= 4) return 3;
+  return 4;
+};
+
+// 根据分钟饱和度 (1..4) 动态计算主题色的浓淡
+function getTopicShade(hexColor, level) {
+  if (level <= 0) return 'var(--l0)';
+  const ratios = [0, 32, 54, 76, 96]; // 混合百分比
+  const p = ratios[level];
+  return `color-mix(in srgb, ${hexColor} ${p}%, #131820)`;
+}
+
+const slotToTimeRange = i => {
+  const h = START + Math.floor(i / SPH);
+  const m = (i % SPH) * 5;
+  const mEnd = m + 5;
+  const hEnd = mEnd === 60 ? h + 1 : h;
+  const mEndMod = mEnd % 60;
+  const f = n => String(n).padStart(2, '0');
+  return [`${f(h)}:${f(m)}`, `${f(hEnd)}:${f(mEndMod)}`];
+};
+
+// ---- 3. 渲染 15×12 严格正方形矩阵 ----
+const hmMatrix = document.getElementById('hmMatrix');
+let mHtml = `<div class="hm-corner">M\\H</div>`;
+for (let h = START; h < END; h++) {
+  mHtml += `<div class="hm-col-head">${String(h).padStart(2, '0')}</div>`;
+}
+
+for (let row = 0; row < SPH; row++) {
+  const minLabel = `:${String(row * 5).padStart(2, '0')}`;
+  mHtml += `<div class="hm-row-label">${row % 2 === 0 ? minLabel : '·'}</div>`;
+  for (let col = 0; col < HOURS; col++) {
+    const slotIdx = col * SPH + row;
+    const v = Math.round(grid[slotIdx] * 10) / 10;
+    const [tStart] = slotToTimeRange(slotIdx);
+    const domTopic = dominantTopicPerSlot[slotIdx];
+    const allTopics = Object.keys(slotTopicWeights[slotIdx]);
+    if (domTopic && !allTopics.includes(domTopic)) allTopics.push(domTopic);
+
+    mHtml += `<div class="hm-cell${v > 0 ? ' on' : ''}"
+                   data-slot="${slotIdx}"
+                   data-lv="${lvl(v)}"
+                   data-dom="${domTopic}"
+                   data-topics="${allTopics.join(',')}"
+                   data-t="${tStart}"></div>`;
+  }
+}
+
+// 底部单行紧凑小时汇总
+mHtml += `<div class="hm-summary-label">Σ/h</div>`;
+for (let col = 0; col < HOURS; col++) {
+  let hrSum = 0;
+  for (let row = 0; row < SPH; row++) hrSum += grid[col * SPH + row];
+  hrSum = Math.round(hrSum);
+  const pct = Math.min(100, Math.round((hrSum / 60) * 100));
+  mHtml += `<div class="hm-hour-stat">
+    <div class="hm-hour-bar-bg"><div class="hm-hour-bar-fill" style="width:${pct}%"></div></div>
+    <div class="hm-hour-val">${hrSum}m</div>
+  </div>`;
+}
+hmMatrix.innerHTML = mHtml;
+
+// ---- 4. 渲染右侧「心流雷达（上午/下午/晚间动态聚合）」 ----
+const phases = [
+  { name: '上午攻坚', range: '07:00–12:00', startH: 7, endH: 12, color: 'var(--good)' },
+  { name: '下午推进', range: '12:00–18:00', startH: 12, endH: 18, color: 'var(--accent)' },
+  { name: '晚间创作', range: '18:00–22:00', startH: 18, endH: 22, color: 'var(--pink)' }
+];
+const phaseList = document.getElementById('phaseList');
+phases.forEach(p => {
+  let activeMins = 0;
+  const totalSpanMins = (p.endH - p.startH) * 60;
+  for (let h = p.startH; h < p.endH; h++) {
+    const col = h - START;
+    for (let r = 0; r < SPH; r++) activeMins += grid[col * SPH + r];
+  }
+  activeMins = Math.round(activeMins);
+  const ratio = Math.min(100, Math.round((activeMins / totalSpanMins) * 100));
+  phaseList.insertAdjacentHTML('beforeend', `
+    <div class="phase-item">
+      <div class="phase-top">
+        <span><span class="phase-name">${p.name}</span><span class="phase-time">${p.range}</span></span>
+        <span class="phase-val">${activeMins}m 活跃 (${ratio}%)</span>
+      </div>
+      <div class="phase-bar">
+        <div class="phase-fill" style="width:${ratio}%;background:${p.color}"></div>
+      </div>
+    </div>
+  `);
+});
+
+// ---- 5. 热力图色彩引擎（支持 GitHub 绿 / 主题光谱 / 单主题过滤染色） ----
+let currentColorMode = 'green'; // 'green' | 'topic'
+let currentFilter = 'all';
+
+function updateHeatmapColors() {
+  const cells = hmMatrix.querySelectorAll('.hm-cell');
+  cells.forEach(c => {
+    const lv = Number(c.dataset.lv);
+    const dom = c.dataset.dom;
+    const topics = (c.dataset.topics || '').split(',');
+
+    c.classList.remove('dimmed', 'topic-match');
+
+    if (lv === 0) {
+      c.style.background = 'var(--l0)';
+      if (currentFilter !== 'all') c.classList.add('dimmed');
+      return;
+    }
+
+    // 如果当前开启了某个特定主题过滤，匹配到的格子直接染成该主题的专属色！
+    if (currentFilter !== 'all') {
+      const match = topics.includes(currentFilter);
+      if (match) {
+        const hex = labels[currentFilter][2];
+        c.style.background = getTopicShade(hex, lv);
+        c.classList.add('topic-match');
+      } else {
+        c.style.background = `var(--l${lv})`;
+        c.classList.add('dimmed');
+      }
+      return;
+    }
+
+    // 未过滤状态下，根据右上角开关决定是「GitHub绿」还是「全彩主题光谱」
+    if (currentColorMode === 'green') {
+      c.style.background = `var(--l${lv})`;
+    } else {
+      const hex = (dom && labels[dom]) ? labels[dom][2] : '#39d353';
+      c.style.background = getTopicShade(hex, lv);
+    }
+  });
+
+  renderLegend();
+}
+
+function renderLegend() {
+  const legendEl = document.getElementById('hmLegend');
+  if (currentColorMode === 'green' && currentFilter === 'all') {
+    legendEl.innerHTML = `
+      <span>空闲 0m</span>
+      <div class="cell" style="background:var(--l0)"></div>
+      <div class="cell" style="background:var(--l1)"></div>
+      <div class="cell" style="background:var(--l2)"></div>
+      <div class="cell" style="background:var(--l3)"></div>
+      <div class="cell" style="background:var(--l4)"></div>
+      <span>满载 5m</span>
+    `;
+  } else {
+    let html = '<span>动态主题光谱 (深浅代表分钟数)：</span>';
+    Object.entries(labels).forEach(([k, [name, , hex]]) => {
+      html += `<span class="legend-topic-item" data-k="${k}">
+        <span class="cell" style="background:${hex}"></span>${name}
+      </span>`;
+    });
+    legendEl.innerHTML = html;
+    legendEl.querySelectorAll('.legend-topic-item').forEach(el => {
+      el.addEventListener('click', () => applyTopicFilter(el.dataset.k));
+    });
+  }
+}
+
+document.getElementById('colorModeSwitch').addEventListener('click', e => {
+  const btn = e.target.closest('.mode-btn');
+  if (!btn) return;
+  currentColorMode = btn.dataset.mode;
+  document.querySelectorAll('#colorModeSwitch .mode-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.mode === currentColorMode);
+  });
+  updateHeatmapColors();
+});
+
+// ---- 6. 悬浮 Tooltip 与点击跳转 ----
+const tooltip = document.getElementById('tooltip');
+
+hmMatrix.addEventListener('mouseover', e => {
+  const cell = e.target.closest('.hm-cell');
+  if (!cell) return;
+  const slotIdx = Number(cell.dataset.slot);
+  const v = Math.round(grid[slotIdx] * 10) / 10;
+  const [tStart, tEnd] = slotToTimeRange(slotIdx);
+  const tasks = slotTasks[slotIdx];
+  const dom = cell.dataset.dom;
+
+  let tasksHtml = '';
+  if (tasks.length > 0) {
+    tasksHtml = tasks.map(t => {
+      const [lab, cls] = labels[t.topicKey] || ['其他', ''];
+      return `<div class="tt-task">• [${t.tStr}] ${t.title} <span class="topic ${cls}">${lab}</span></div>`;
+    }).join('');
+  } else if (v > 0 && dom && labels[dom]) {
+    const [lab, cls] = labels[dom];
+    tasksHtml = `<div class="tt-task">• 持续会话延续中 <span class="topic ${cls}">${lab}</span></div>`;
+  } else {
+    tasksHtml = `<div class="tt-task" style="color:var(--dim)">该 5 分钟切片无活跃记录</div>`;
+  }
+
+  tooltip.innerHTML = `
+    <div class="tt-head">
+      <span>${tStart} – ${tEnd}</span>
+      <span class="tt-load">${v} / 5 min (${Math.round(v/5*100)}%)</span>
+    </div>
+    ${tasksHtml}
+    ${v > 0 ? '<div class="tt-hint">点击定位到下方时间线 ↓</div>' : ''}
+  `;
+  tooltip.classList.add('show');
+});
+
+hmMatrix.addEventListener('mousemove', e => {
+  const pad = 14;
+  let x = e.clientX + pad;
+  let y = e.clientY + pad;
+  if (x + 300 > window.innerWidth) x = e.clientX - 300 - pad;
+  if (y + 140 > window.innerHeight) y = e.clientY - 140 - pad;
+  tooltip.style.left = `${x}px`;
+  tooltip.style.top = `${y}px`;
+});
+
+hmMatrix.addEventListener('mouseleave', () => tooltip.classList.remove('show'));
+
+hmMatrix.addEventListener('click', e => {
+  const cell = e.target.closest('.hm-cell.on');
+  if (cell) jumpToTimeline(cell.dataset.t);
+});
+
+// ---- 7. 渲染下方主题条、过滤胶囊与时间线 ----
+const themes = /*__OTUS_THEMES__*/ [];
+const totalMin = themes.reduce((s, t) => s + t[1], 0);
+const barsContainer = document.getElementById('bars');
+
+themes.forEach(([name, min, color, key]) => {
+  const pct = totalMin > 0 ? Math.round((min / totalMin) * 100) : 0;
+  barsContainer.insertAdjacentHTML('beforeend', `
+    <div class="bar-item" data-k="${key}">
+      <div class="bar-top">
+        <span class="bar-name"><span class="bar-dot" style="background:${color}"></span>${name}</span>
+        <span class="bar-meta">${min}m · ${pct}%</span>
+      </div>
+      <div class="bar-track">
+        <div class="bar-fill" style="width:${pct}%;background:${color}"></div>
+      </div>
+    </div>
+  `);
+});
+
+// 动态生成过滤胶囊（带主题色圆点）
+const pillsContainer = document.getElementById('filterPills');
+let pillsHtml = `<span class="pill active" data-k="all">全部 (${tlData.length})</span>`;
+Object.entries(labels).forEach(([k, [name, , hex]]) => {
+  const cnt = tlData.filter(x => x[3] === k).length;
+  pillsHtml += `<span class="pill" data-k="${k}"><span class="p-dot" style="background:${hex}"></span>${name} (${cnt})</span>`;
+});
+pillsContainer.innerHTML = pillsHtml;
+
+const tlContainer = document.getElementById('tl');
+const tlCount = document.getElementById('tlCount');
+const resetBtn = document.getElementById('resetFilter');
+
+function renderTimeline(filterKey = 'all') {
+  tlContainer.innerHTML = '';
+  const filtered = filterKey === 'all'
+    ? tlData
+    : tlData.filter(item => item[3] === filterKey);
+
+  tlCount.textContent = `显示 ${filtered.length} / ${tlData.length} 条记录`;
+
+  filtered.forEach(([t, d, ti, k, subHl, entStr]) => {
+    const [lab, cls] = labels[k] || ['其他', 'misc', '#8b949e'];
+    let hlHtml = '';
+    if (subHl && subHl.length) {
+      hlHtml = '<ul class="tl-sub-hl">';
+      subHl.forEach(h => { hlHtml += `<li>• ${h}</li>`; });
+      hlHtml += '</ul>';
+    }
+    let entHtml = entStr ? `<div class="tl-sub-ent">${entStr}</div>` : '';
+    let detailsHtml = (hlHtml || entHtml) ? `<div class="tl-details">${hlHtml}${entHtml}</div>` : '';
+
+    tlContainer.insertAdjacentHTML('beforeend', `
+      <div class="item" data-t="${t}" data-k="${k}">
+        <div class="item-head">
+          <span class="t">${t}</span>
+          <span class="d">${d}</span>
+          <span class="ti">${ti}</span>
+          <span class="topic ${cls}">${lab}</span>
+        </div>
+        ${detailsHtml}
+      </div>
+    `);
+  });
+}
+
+function applyTopicFilter(key) {
+  currentFilter = (currentFilter === key && key !== 'all') ? 'all' : key;
+
+  document.querySelectorAll('#filterPills .pill').forEach(p => {
+    p.classList.toggle('active', p.dataset.k === currentFilter);
+  });
+
+  document.querySelectorAll('#bars .bar-item').forEach(b => {
+    if (currentFilter === 'all') {
+      b.classList.remove('active', 'dimmed');
+    } else {
+      const match = b.dataset.k === currentFilter;
+      b.classList.toggle('active', match);
+      b.classList.toggle('dimmed', !match);
+    }
+  });
+
+  resetBtn.classList.toggle('active', currentFilter !== 'all');
+  updateHeatmapColors();
+  renderTimeline(currentFilter);
+}
+
+pillsContainer.addEventListener('click', e => {
+  const pill = e.target.closest('.pill');
+  if (pill) applyTopicFilter(pill.dataset.k);
+});
+
+barsContainer.addEventListener('click', e => {
+  const item = e.target.closest('.bar-item');
+  if (item) applyTopicFilter(item.dataset.k);
+});
+
+resetBtn.addEventListener('click', () => applyTopicFilter('all'));
+window.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && currentFilter !== 'all') applyTopicFilter('all');
+});
+
+function jumpToTimeline(time) {
+  if (currentFilter !== 'all') applyTopicFilter('all');
+  const items = tlContainer.querySelectorAll('.item');
+  const [targetH, targetM] = time.split(':').map(Number);
+  for (const item of items) {
+    const [h, m] = item.dataset.t.split(':').map(Number);
+    if (h > targetH || (h === targetH && m >= targetM)) {
+      item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      item.classList.add('highlight');
+      setTimeout(() => item.classList.remove('highlight'), 1400);
+      return;
+    }
+  }
+  if (items.length) {
+    items[items.length - 1].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+}
+
+// 初始化渲染
+updateHeatmapColors();
+renderTimeline('all');
+</script>
+</body>
+</html>
