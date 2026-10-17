@@ -8,12 +8,20 @@ export const SNAPSHOTS_DIR = path.join(DATA_DIR, "snapshots");
 export const BIN_DIR = path.join(DATA_DIR, "bin");
 export const TMP_DIR = path.join(DATA_DIR, "tmp");
 
+export function getLocalDateKey(date: Date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export interface OtusConfig {
   outputDir: string;
   dbPath: string;
   snapshotsDir: string;
   binDir: string;
   tmpDir: string;
+  maxStorageBytes: number;
 
   enableInputMonitor: boolean;
   snapshotDebounceMs: number;
@@ -43,6 +51,7 @@ export const defaultConfig: OtusConfig = {
   snapshotsDir: SNAPSHOTS_DIR,
   binDir: BIN_DIR,
   tmpDir: TMP_DIR,
+  maxStorageBytes: 10 * 1024 * 1024 * 1024, // 10GB 磁盘存储硬上限，达到自动 FIFO 轮转清理旧截图
 
   enableInputMonitor: true,
   snapshotDebounceMs: 1000,

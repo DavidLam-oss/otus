@@ -31,9 +31,7 @@ node_modules/
 docs/
 *.scratch.*
 
-# IDE & Editor caches
-.idea/
-.vscode/
-*.swp
-*.swo
+# Compiled native binaries
+bin/*
+!bin/otus
 

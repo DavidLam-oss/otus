@@ -2,8 +2,8 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
-import { defaultConfig, DATA_DIR } from "./config.ts";
+import { execSync, spawn } from "node:child_process";
+import { defaultConfig, DATA_DIR, getLocalDateKey } from "./config.ts";
 import { ActivityStore } from "./store.ts";
 import { ActivityRecorderService } from "./recorder.ts";
 import { ActivityAnalyzer } from "./analyzer.ts";
@@ -62,6 +62,21 @@ async function main() {
       analyzer.start();
       rotator.start();
 
+      // 启动顶部菜单栏常驻小夜枭 (Menu Bar Item)
+      const menuBarBin = path.join(import.meta.dirname, "../bin/otus-menu-bar");
+      const appMenuBarBin = "/Applications/Otus.app/Contents/Resources/app/bin/otus-menu-bar";
+      const targetMenuBin = fs.existsSync(appMenuBarBin) ? appMenuBarBin : menuBarBin;
+      let menuProc: any = null;
+
+      if (fs.existsSync(targetMenuBin)) {
+        try {
+          menuProc = spawn(targetMenuBin, [], { detached: true, stdio: "ignore" });
+          menuProc.unref();
+        } catch (err) {
+          console.error("[Otus] Failed to start menu bar process:", err);
+        }
+      }
+
       // 日终报告与昨日自动补漏生成器
       const summarizer = new ActivitySummarizer(store, defaultConfig);
       const renderer = new ReportRenderer(store, defaultConfig);
@@ -116,7 +131,7 @@ async function main() {
         // 晚间 21:00 至 23:59 自动静默生成当天日终报告并推送系统通知
         if (hour >= 21) {
           renderer.renderHtmlReport().then(() => {
-            const today = now.toISOString().slice(0, 10);
+            const today = getLocalDateKey(now);
             const summary = store.getSummary("daily", today);
             const stats = summary?.stats?.reportStats || {};
             sendDesktopNotification({
@@ -138,6 +153,10 @@ async function main() {
         recorder.stop();
         analyzer.stop();
         rotator.stop();
+        if (menuProc && !menuProc.killed) {
+          try { menuProc.kill("SIGTERM"); } catch {}
+        }
+        try { execSync("pkill -f otus-menu-bar 2>/dev/null"); } catch {}
         try {
           if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
         } catch {}
@@ -150,6 +169,7 @@ async function main() {
     }
 
     case "stop": {
+      try { execSync("pkill -f otus-menu-bar 2>/dev/null"); } catch {}
       if (!fs.existsSync(PID_FILE)) {
         console.log("[Otus] No active daemon running.");
         return;
@@ -178,7 +198,7 @@ async function main() {
         }
       }
 
-      const today = new Date().toISOString().slice(0, 10);
+      const today = getLocalDateKey();
       const [year, month, day] = today.split("-").map(Number);
       const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
       const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();

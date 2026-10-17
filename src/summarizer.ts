@@ -1,6 +1,6 @@
 import { ActivityStore } from "./store.ts";
 import type { ActivitySession } from "./store.ts";
-import { defaultConfig } from "./config.ts";
+import { defaultConfig, getLocalDateKey } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 
 const OTUS_NARRATIVE_SYSTEM_PROMPT = `You are writing a first-person personal tinkering & dev journal (个人折腾日记) for the user, based on a structured activity skeleton they give you. Note: this is on the user's personal computer for personal exploration, coding, learning and tinkering (NOT a corporate employee work report).
@@ -44,7 +44,7 @@ export class ActivitySummarizer {
     stats: Record<string, any>;
     generatedAt: number;
   }> {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getLocalDateKey();
     const targetDate = dateKey || today;
     const isToday = targetDate === today;
 

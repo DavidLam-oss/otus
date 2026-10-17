@@ -4,7 +4,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { ActivityStore } from "./store.ts";
 import type { ActivitySession } from "./store.ts";
-import { defaultConfig } from "./config.ts";
+import { defaultConfig, getLocalDateKey } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 import { redactSensitiveText } from "./redactor.ts";
 
@@ -367,7 +367,7 @@ export class ActivityRecorderService {
 
     this.lastCaptureAttemptAt = Date.now();
     const session = this.ensureSession(trigger);
-    const dateKey = new Date().toISOString().slice(0, 10);
+    const dateKey = getLocalDateKey();
     const dateDir = path.join(this.config.snapshotsDir, dateKey);
     fs.mkdirSync(dateDir, { recursive: true });
 

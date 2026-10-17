@@ -99,6 +99,7 @@ swiftc -O "$SOURCE_DIR/native/input-monitor.swift" -o "$APP_DIR/bin/otus-input-m
 swiftc -O "$SOURCE_DIR/native/browser-tab.swift" -o "$APP_DIR/bin/otus-browser-tab"
 swiftc -O "$SOURCE_DIR/native/img-diff.swift" -o "$APP_DIR/bin/otus-diff"
 swiftc -O "$SOURCE_DIR/native/perms-check.swift" -o "$APP_DIR/bin/otus-perms"
+swiftc -O "$SOURCE_DIR/native/menu-bar.swift" -o "$APP_DIR/bin/otus-menu-bar"
 
 # 5. 写入启动二进制
 echo "[4/4] Creating launcher binary..."
