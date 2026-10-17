@@ -118,6 +118,9 @@ async function main() {
 
       const sessions = store.listSessions({ since: startOfDay, until: endOfDay, limit: 1000 });
       const analyzed = sessions.filter((s) => s.analysisStatus === "analyzed");
+      const notWorth = sessions.filter((s) => s.analysisStatus === "not_worth");
+      const failed = sessions.filter((s) => s.analysisStatus === "failed");
+      const pending = sessions.filter((s) => s.analysisStatus === "pending");
       const totalMs = sessions.reduce((acc, s) => acc + (s.durationMs || 0), 0);
 
       console.log("=========================================");
@@ -125,7 +128,9 @@ async function main() {
       console.log("=========================================");
       console.log(`Daemon Running:  ${isRunning ? `YES (PID: ${pid})` : "NO"}`);
       console.log(`Database:        ${defaultConfig.dbPath}`);
-      console.log(`Today Sessions:  ${sessions.length} (Analyzed: ${analyzed.length})`);
+      console.log(
+        `Today Sessions:  ${sessions.length} (${analyzed.length} analyzed, ${notWorth.length} idle filtered${failed.length ? `, ${failed.length} failed` : ""}${pending.length ? `, ${pending.length} pending` : ""})`
+      );
       console.log(`Active Minutes:  ${Math.round(totalMs / 60000)}m`);
 
       const openSessions = store.listOpenSessions();
@@ -139,10 +144,25 @@ async function main() {
     }
 
     case "analyze": {
-      console.log("[Otus] Running micro-session analyzer on pending sessions...");
+      const all = args.includes("--all");
+      console.log(`[Otus] Running micro-session analyzer${all ? " (processing all pending and failed sessions)" : ""}...`);
       const analyzer = new ActivityAnalyzer(store, defaultConfig);
-      const res = await analyzer.runOnce();
-      console.log(`[Otus] Analyzed: ${res.analyzed}, Processed: ${res.processed}, Failed: ${res.failed}`);
+
+      let totalProcessed = 0;
+      let totalAnalyzed = 0;
+      let totalFailed = 0;
+
+      while (true) {
+        const res = await analyzer.runOnce({ limit: all ? 50 : 20 });
+        totalProcessed += res.processed;
+        totalAnalyzed += res.analyzed;
+        totalFailed += res.failed;
+
+        if (res.processed === 0 || !all) break;
+        console.log(`[Otus] Progress: ${totalAnalyzed} analyzed, ${totalProcessed} processed...`);
+      }
+
+      console.log(`[Otus] Done. Analyzed: ${totalAnalyzed}, Processed: ${totalProcessed}, Failed: ${totalFailed}`);
       break;
     }
 

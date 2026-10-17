@@ -83,16 +83,26 @@ export class ActivityAnalyzer {
     }
   }
 
-  public async runOnce(): Promise<{ processed: number; analyzed: number; failed: number }> {
+  public async runOnce(opts: { limit?: number; includeFailed?: boolean } = {}): Promise<{ processed: number; analyzed: number; failed: number }> {
     if (this.running) return { processed: 0, analyzed: 0, failed: 0 };
     this.running = true;
     let processed = 0;
     let analyzed = 0;
     let failed = 0;
 
+    const limit = opts.limit ?? 20;
     try {
-      const pending = this.store.listSessions({ analysisStatus: "pending", limit: 10 });
-      for (const sess of pending) {
+      // 优先获取 pending 状态的会话；若未达到 limit，则补充分派失败 (failed) 的会话重新分析
+      let targets = this.store.listSessions({ analysisStatus: "pending", limit });
+      if (opts.includeFailed !== false && targets.length < limit) {
+        const failedSessions = this.store.listSessions({
+          analysisStatus: "failed",
+          limit: limit - targets.length
+        });
+        targets = [...targets, ...failedSessions];
+      }
+
+      for (const sess of targets) {
         if (!sess.endedAt) continue;
         processed++;
         const res = await this.analyzeSession(sess).catch((err) => {
@@ -101,8 +111,8 @@ export class ActivityAnalyzer {
           return "failed";
         });
         if (res === "analyzed") analyzed++;
-        // 错峰停顿 2 秒
-        await new Promise((r) => setTimeout(r, 2000));
+        // 错峰停顿 1 秒 (给大模型网关缓冲)
+        await new Promise((r) => setTimeout(r, 1000));
       }
     } finally {
       this.running = false;
@@ -153,37 +163,21 @@ export class ActivityAnalyzer {
     // 4. 调用大模型 (若未配置或离线，自动使用本地离线启发式分析兜底，确保全链路跑通)
     const hasLlm = !!this.config.llmApiKey || this.config.llmApiBase.includes("localhost") || this.config.llmApiBase.includes("127.0.0.1");
     if (!hasLlm) {
-      const topApp = session.appNames[0] || "Desktop";
-      const sampleOcr = ocrSnippets[0] || "";
-      const inferredTitle = sampleOcr ? `${topApp}: ${sampleOcr.slice(0, 50)}` : `Work in ${topApp}`;
-      
-      this.store.setSessionAnalysis(session.id, {
-        status: "analyzed",
-        title: inferredTitle,
-        description: `Active session in ${topApp} with ${ocrSnippets.length} OCR frames captured.`,
-        model: "offline-heuristic",
-        worthMemory: false,
-        worthKnowledge: false,
-        isMeeting: false,
-        entities: {},
-        topics: [topApp.toLowerCase()],
-        project: null,
-        highlights: ocrSnippets.slice(0, 3)
-      });
-      return "analyzed";
+      return this.applyOfflineHeuristic(session, ocrSnippets, "No LLM configured");
     }
 
     try {
-      const response = await this.callLLM(OTUS_ANALYZER_SYSTEM_PROMPT, sanitizedPrompt, this.config.analysisModel);
+      const response = await this.callLLMWithRetry(
+        OTUS_ANALYZER_SYSTEM_PROMPT,
+        sanitizedPrompt,
+        this.config.analysisModel,
+        3
+      );
       const parsed = this.cleanAndParseJSON(response);
 
       if (!parsed || typeof parsed !== "object") {
-        this.store.setSessionAnalysis(session.id, {
-          status: "failed",
-          error: "Invalid JSON from LLM",
-          model: this.config.analysisModel
-        });
-        return "failed";
+        console.warn(`[ActivityAnalyzer] Invalid JSON from LLM for session ${session.id}, falling back to offline heuristic...`);
+        return this.applyOfflineHeuristic(session, ocrSnippets, "Invalid JSON from LLM");
       }
 
       if (!parsed.worth) {
@@ -219,13 +213,123 @@ export class ActivityAnalyzer {
 
       return "analyzed";
     } catch (err: any) {
-      this.store.setSessionAnalysis(session.id, {
-        status: "failed",
-        error: err.message || String(err),
-        model: this.config.analysisModel
-      });
-      return "failed";
+      console.warn(
+        `[ActivityAnalyzer] LLM analysis failed after retries for session ${session.id} (${err.message}), falling back to offline heuristic...`
+      );
+      return this.applyOfflineHeuristic(session, ocrSnippets, err.message || "LLM call failed");
     }
+  }
+
+  private applyOfflineHeuristic(
+    session: ActivitySession,
+    ocrSnippets: string[],
+    reason: string
+  ): "analyzed" {
+    const topApp = session.appNames[0] || "Desktop";
+    const sampleOcr = ocrSnippets[0] || "";
+
+    // 过滤条件：无任何按键/鼠标事件且无有效 OCR 内容，或者纯系统屏保/锁屏
+    const isIdle =
+      (session.eventCount === 0 && ocrSnippets.length === 0) ||
+      (session.appNames.length > 0 &&
+        session.appNames.every((a) =>
+          ["loginwindow", "ScreenSaverEngine", "LockScreen"].includes(a)
+        ));
+
+    if (isIdle) {
+      this.store.setSessionAnalysis(session.id, {
+        status: "not_worth",
+        title: `Idle / ${topApp}`,
+        description: `Inactive session with 0 input events. Filtered via offline heuristic (${reason.slice(0, 100)}).`,
+        model: "offline-heuristic",
+        worthMemory: false,
+        worthKnowledge: false,
+        isMeeting: false,
+        entities: {},
+        topics: [topApp.toLowerCase()],
+        project: null,
+        highlights: []
+      });
+      return "analyzed";
+    }
+
+    // 提取可能的项目名称：从应用名称或 OCR 常见词中简单判断
+    let inferredProject: string | null = null;
+    if (session.appNames.includes("Code") || session.appNames.includes("Visual Studio Code")) {
+      const match = sampleOcr.match(/([a-zA-Z0-9_-]+)\s*[-—]\s*(?:Visual Studio Code|Code)/i);
+      if (match && match[1]) inferredProject = match[1];
+    }
+
+    const inferredTitle = sampleOcr
+      ? `${topApp}: ${sampleOcr.slice(0, 60)}`
+      : `Work in ${session.appNames.slice(0, 2).join(", ") || topApp}`;
+
+    this.store.setSessionAnalysis(session.id, {
+      status: "analyzed",
+      title: inferredTitle,
+      description: `Active session in ${session.appNames.join(", ") || topApp} with ${ocrSnippets.length} OCR frames captured (fallback: ${reason.slice(0, 100)}).`,
+      model: "offline-heuristic",
+      worthMemory: false,
+      worthKnowledge: false,
+      isMeeting: false,
+      entities: {},
+      topics: session.appNames.map((a) => a.toLowerCase()),
+      project: inferredProject,
+      highlights: ocrSnippets.slice(0, 3)
+    });
+    return "analyzed";
+  }
+
+  private async callLLMWithRetry(
+    systemPrompt: string,
+    userPrompt: string,
+    model: string,
+    maxRetries: number = 3
+  ): Promise<string> {
+    let lastError: any;
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        return await this.callLLM(systemPrompt, userPrompt, model);
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || err);
+
+        // 如果是账户余额耗尽（0额度），重试无法解决，直接抛出由离线启发式分析接管
+        const isQuotaExhausted =
+          msg.toLowerCase().includes("credits exhausted") ||
+          msg.toLowerCase().includes("insufficient_quota") ||
+          msg.toLowerCase().includes("quota exceeded");
+
+        // 仅对瞬时并发限频、网关错误或网络闪断执行重试与指数退避
+        const isRateLimit =
+          !isQuotaExhausted &&
+          (msg.includes("429") ||
+            msg.toLowerCase().includes("rate limit") ||
+            msg.toLowerCase().includes("too many requests"));
+        const isGateway =
+          msg.includes("500") ||
+          msg.includes("502") ||
+          msg.includes("503") ||
+          msg.includes("504");
+        const isNetwork =
+          msg.includes("ECONNRESET") ||
+          msg.includes("ETIMEDOUT") ||
+          msg.includes("fetch failed") ||
+          msg.includes("AbortError");
+
+        const isRetryable = isRateLimit || isGateway || isNetwork;
+        if (!isRetryable || attempt >= maxRetries) {
+          throw err;
+        }
+
+        const backoffMs = Math.round(1500 * Math.pow(2, attempt) + Math.random() * 500);
+        console.warn(
+          `[ActivityAnalyzer] LLM call transiently failed (attempt ${attempt + 1}/${maxRetries + 1}): ${msg.slice(0, 100)}. Retrying in ${backoffMs}ms...`
+        );
+        await new Promise((r) => setTimeout(r, backoffMs));
+      }
+    }
+    throw lastError;
   }
 
   private async callLLM(systemPrompt: string, userPrompt: string, model: string): Promise<string> {
@@ -237,27 +341,35 @@ export class ActivityAnalyzer {
       headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
     }
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt }
-        ],
-        temperature: 0.1,
-        response_format: { type: "json_object" }
-      })
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45000);
 
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`LLM HTTP ${res.status}: ${errText}`);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt }
+          ],
+          temperature: 0.1,
+          response_format: { type: "json_object" }
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`LLM HTTP ${res.status}: ${errText}`);
+      }
+
+      const data = await res.json() as any;
+      return data.choices?.[0]?.message?.content || "";
+    } finally {
+      clearTimeout(timeout);
     }
-
-    const data = await res.json() as any;
-    return data.choices?.[0]?.message?.content || "";
   }
 
   private cleanAndParseJSON(raw: string): any {

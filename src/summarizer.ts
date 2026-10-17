@@ -72,6 +72,7 @@ export class ActivitySummarizer {
 
     const allSessions = this.store.listSessions({ since: startOfDay, until: endOfDay, limit: 1000 });
     const analyzedSessions = allSessions.filter((s) => s.analysisStatus === "analyzed" && s.analysisTitle);
+    const filteredSessions = allSessions.filter((s) => s.analysisStatus === "not_worth");
 
     // 提取会话的抽稀上下文
     const enriched = analyzedSessions.map((sess) => {
@@ -123,6 +124,7 @@ export class ActivitySummarizer {
     const reportStats = {
       sessionCount: allSessions.length,
       analyzedCount: analyzedSessions.length,
+      filteredCount: filteredSessions.length,
       totalActiveMinutes: Math.round(totalActiveMs / 60000),
       clusterCount: clusters.length,
       topApps
@@ -366,8 +368,9 @@ export class ActivitySummarizer {
     const topAppsStr = stats.topApps.length
       ? ` 主用：${stats.topApps.map((a: any) => `${a.app} (${a.minutes}m)`).join("、")}。`
       : "";
+    const filteredStr = stats.filteredCount > 0 ? `，${stats.filteredCount} 个闲置已过滤` : "";
     lines.push(
-      `活跃 ${stats.totalActiveMinutes} 分钟，共 ${stats.sessionCount} 个 session（已分析 ${stats.analyzedCount}），分到 ${stats.clusterCount} 个主题。${topAppsStr}`
+      `活跃 ${stats.totalActiveMinutes} 分钟，共 ${stats.sessionCount} 个 session（${stats.analyzedCount} 个实质折腾${filteredStr}），归类为 ${stats.clusterCount} 个核心主题。${topAppsStr}`
     );
     lines.push("");
 
@@ -460,27 +463,64 @@ export class ActivitySummarizer {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (this.config.llmApiKey) headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({
-        model: this.config.reportModel,
-        messages: [
-          { role: "system", content: OTUS_NARRATIVE_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `Here is the structured skeleton. Rewrite it into the final journal, following all rules.\n\n${skeleton}`
-          }
-        ],
-        temperature: 0.3
-      })
-    });
+    let lastError: any;
+    for (let attempt = 0; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 60000);
 
-    if (!res.ok) {
-      throw new Error(`Narrative pass HTTP ${res.status}`);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: this.config.reportModel,
+            messages: [
+              { role: "system", content: OTUS_NARRATIVE_SYSTEM_PROMPT },
+              {
+                role: "user",
+                content: `Here is the structured skeleton. Rewrite it into the final journal, following all rules.\n\n${skeleton}`
+              }
+            ],
+            temperature: 0.3
+          })
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`Narrative pass HTTP ${res.status}: ${errText}`);
+        }
+
+        const data = await res.json() as any;
+        return data.choices?.[0]?.message?.content?.trim() || "";
+      } catch (err: any) {
+        lastError = err;
+        const msg = String(err?.message || err);
+        const isQuotaExhausted =
+          msg.toLowerCase().includes("credits exhausted") ||
+          msg.toLowerCase().includes("insufficient_quota") ||
+          msg.toLowerCase().includes("quota exceeded");
+
+        const isRetryable =
+          !isQuotaExhausted &&
+          (msg.includes("429") ||
+            msg.toLowerCase().includes("rate limit") ||
+            msg.includes("500") ||
+            msg.includes("502") ||
+            msg.includes("503") ||
+            msg.includes("fetch failed"));
+
+        if (attempt < 2 && isRetryable) {
+          const backoff = 2000 * Math.pow(2, attempt);
+          console.warn(`[ActivitySummarizer] Narrative pass attempt ${attempt + 1} failed (${msg.slice(0, 100)}). Retrying in ${backoff}ms...`);
+          await new Promise((r) => setTimeout(r, backoff));
+        } else {
+          break;
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
     }
-
-    const data = await res.json() as any;
-    return data.choices?.[0]?.message?.content?.trim() || "";
+    throw lastError;
   }
 }
