@@ -178,36 +178,51 @@ export class ReportRenderer {
     html = html.replace(/\/\*__OTUS_TL_DATA__\*\/\s*\[\]/g, JSON.stringify(tlData));
     html = html.replace(/\/\*__OTUS_THEMES__\*\/\s*\[\]/g, JSON.stringify(themes));
 
-    // 头部 KPI 指标卡
-    const efficiencyPct = stats.sessionCount > 0 ? Math.round(((stats.analyzedCount || 0) / stats.sessionCount) * 100) : 0;
+    // 头部 KPI 指标卡 (100% 实时从 SQLite 会话计算，确保指标、心流热力图与时间线绝对同步)
+    const liveTotalActiveMinutes = Math.round(allSessions.reduce((acc, s) => acc + (s.durationMs || 0), 0) / 60000);
+    const liveAnalyzedCount = analyzedSessions.length;
+    const liveSessionCount = allSessions.length;
+    const liveFilteredCount = Math.max(0, liveSessionCount - liveAnalyzedCount);
+
+    const liveAppDurations = new Map<string, number>();
+    for (const sess of allSessions) {
+      const app = sess.appNames[0] || "Desktop";
+      liveAppDurations.set(app, (liveAppDurations.get(app) || 0) + (sess.durationMs || 0));
+    }
+    const liveTopAppEntry = [...liveAppDurations.entries()].sort((a, b) => b[1] - a[1])[0];
+    const liveTopAppName = liveTopAppEntry ? liveTopAppEntry[0] : (stats.topApps?.[0]?.app || "Desktop");
+    const liveTopAppMins = liveTopAppEntry ? Math.round(liveTopAppEntry[1] / 60000) : (stats.topApps?.[0]?.minutes || 0);
+
+    const efficiencyPct = liveSessionCount > 0 ? Math.round((liveAnalyzedCount / liveSessionCount) * 100) : (stats.sessionCount > 0 ? Math.round(((stats.analyzedCount || 0) / stats.sessionCount) * 100) : 100);
+
     const headMarkup = `
       <div class="head">
         <div class="head-left">
           <h1><span class="dot"></span>Otus 个人折腾日记</h1>
           <div class="sub">${targetDate} · 个人独立探索、Coding & Tinkering 记录流</div>
         </div>
-        <div class="head-right">${stats.totalActiveMinutes || 0} MINS ACTIVE · ${stats.sessionCount || 0} SESSIONS</div>
+        <div class="head-right">${liveTotalActiveMinutes} MINS ACTIVE · ${liveSessionCount} SESSIONS</div>
       </div>
       <div class="stats">
         <div class="stat">
-          <div class="top-row"><span class="n blue">${stats.totalActiveMinutes || 0}m</span><span class="badge">FOCUS</span></div>
+          <div class="top-row"><span class="n blue">${liveTotalActiveMinutes}m</span><span class="badge">FOCUS</span></div>
           <div class="l">全天活跃专注</div>
           <div class="sub-l">覆盖 07:00–22:00</div>
         </div>
         <div class="stat">
-          <div class="top-row"><span class="n green">${stats.analyzedCount || 0}</span><span class="badge">SESSIONS</span></div>
+          <div class="top-row"><span class="n green">${liveAnalyzedCount}</span><span class="badge">SESSIONS</span></div>
           <div class="l">实质折腾会话</div>
-          <div class="sub-l">${stats.filteredCount || 0} 个闲置已过滤</div>
+          <div class="sub-l">${liveFilteredCount} 个闲置已过滤</div>
         </div>
         <div class="stat">
-          <div class="top-row"><span class="n purple">${stats.clusterCount || 0}</span><span class="badge">THEMES</span></div>
+          <div class="top-row"><span class="n purple">${finalThemesMap.size || stats.clusterCount || 0}</span><span class="badge">THEMES</span></div>
           <div class="l">核心聚类主题</div>
           <div class="sub-l">Jaccard ≥ 0.18</div>
         </div>
         <div class="stat">
-          <div class="top-row"><span class="n warn">${stats.topApps?.[0]?.app || "Desktop"}</span><span class="badge">TOP APP</span></div>
+          <div class="top-row"><span class="n warn">${liveTopAppName}</span><span class="badge">TOP APP</span></div>
           <div class="l">最高时长应用</div>
-          <div class="sub-l">${stats.topApps?.[0]?.minutes || 0}m 投入</div>
+          <div class="sub-l">${liveTopAppMins}m 投入</div>
         </div>
       </div>
     `;
@@ -222,7 +237,7 @@ export class ReportRenderer {
         </div>
         <div style="text-align: right;">
           <div style="color: var(--muted); font-size: 11px;">实质折腾数</div>
-          <div style="font-size: 16px; font-weight: 700; color: var(--good); font-family: var(--mono);">${stats.analyzedCount || 0} / ${stats.sessionCount || 0}</div>
+          <div style="font-size: 16px; font-weight: 700; color: var(--good); font-family: var(--mono);">${liveAnalyzedCount} / ${liveSessionCount}</div>
         </div>
       </div>
     `;

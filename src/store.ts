@@ -292,6 +292,15 @@ export class ActivityStore {
     return rows.map((r) => this.mapSessionRow(r));
   }
 
+  public countAnalyzedSessionsSince(since: number): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) as count
+      FROM activity_sessions
+      WHERE analysis_status = 'analyzed' AND (analyzed_at > ? OR updated_at > ?)
+    `).get(since, since) as { count: number } | undefined;
+    return row?.count || 0;
+  }
+
   public setSessionAnalysis(
     id: string,
     analysis: {

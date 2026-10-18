@@ -71,11 +71,12 @@ export class ActivitySummarizer {
     const targetDate = dateKey || today;
     const isToday = targetDate === today;
 
-    // 1. 缓存检查
+    // 1. 缓存与增量活跃判定 (Activity-Driven Cache)
     if (!opts.force) {
       const existing = this.store.getSummary("daily", targetDate);
       if (existing && existing.stats && typeof existing.stats.report === "string") {
-        if (!(isToday && Date.now() - (existing.stats.reportGeneratedAt || existing.updatedAt) > 600000)) {
+        if (!isToday) {
+          // 历史日期（如昨日）：已有总结直接秒开返回，绝不重复调用大模型
           return {
             dateKey: targetDate,
             markdown: existing.stats.report,
@@ -84,6 +85,26 @@ export class ActivitySummarizer {
             stats: existing.stats.reportStats || {},
             insights: existing.stats.insights || [],
             generatedAt: existing.stats.reportGeneratedAt || existing.updatedAt
+          };
+        }
+
+        // 今日报告判定：
+        const lastGeneratedAt = existing.stats.reportGeneratedAt || existing.updatedAt || 0;
+        const elapsedMs = Date.now() - lastGeneratedAt;
+        const newSessions = this.store.countAnalyzedSessionsSince(lastGeneratedAt);
+
+        // 最佳实践：
+        // a. 若自上次生成以来没有任何新的已分析会话产生，100% 复用缓存，避免死板时间过期浪费 Token
+        // b. 若有新会话产生，但处于 30 分钟冷静期内，依然复用缓存，保障日间频繁查看时的毫秒级秒开
+        if (newSessions === 0 || elapsedMs < 30 * 60 * 1000) {
+          return {
+            dateKey: targetDate,
+            markdown: existing.stats.report,
+            skeleton: existing.stats.skeleton || existing.stats.report,
+            isPartial: existing.isPartial,
+            stats: existing.stats.reportStats || {},
+            insights: existing.stats.insights || [],
+            generatedAt: lastGeneratedAt
           };
         }
       }
