@@ -5,6 +5,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var statusTimer: Timer?
     var statusMenuItem: NSMenuItem!
+    var settingsController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -104,6 +105,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
+        let settingsItem = NSMenuItem(title: "偏好设置与模型配置...", action: #selector(openSettings), keyEquivalent: ",")
+        settingsItem.target = self
+        settingsItem.image = NSImage(systemSymbolName: "gearshape", accessibilityDescription: nil)
+        menu.addItem(settingsItem)
+
+        menu.addItem(NSMenuItem.separator())
+
         let quitItem = NSMenuItem(title: "退出 Otus (Quit)", action: #selector(quitApp), keyEquivalent: "q")
         quitItem.target = self
         quitItem.image = NSImage(systemSymbolName: "power", accessibilityDescription: nil)
@@ -163,6 +171,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    @objc func openSettings() {
+        if settingsController == nil {
+            settingsController = SettingsWindowController()
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        settingsController?.showWindow(nil)
+        settingsController?.window?.makeKeyAndOrderFront(nil)
+    }
+
     @objc func quitApp() {
         let bin = getOtusBin()
         let task = Process()
@@ -172,6 +189,253 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         task.waitUntilExit()
 
         NSApp.terminate(nil)
+    }
+}
+
+class SettingsWindowController: NSWindowController {
+    var providerPopUp: NSPopUpButton!
+    var urlField: NSTextField!
+    var keyField: NSSecureTextField!
+    var analysisField: NSTextField!
+    var reportField: NSTextField!
+    var statusLabel: NSTextField!
+
+    convenience init() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 380),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Otus 偏好设置 · 大模型网关配置"
+        window.center()
+        self.init(window: window)
+        setupUI()
+        loadCurrentConfig()
+    }
+
+    private func setupUI() {
+        guard let contentView = window?.contentView else { return }
+
+        var y: CGFloat = 330
+        let labelWidth: CGFloat = 120
+        let fieldWidth: CGFloat = 320
+
+        // 预设提供商下拉选择
+        let pLabel = createLabel("服务提供商:", y: y, width: labelWidth)
+        contentView.addSubview(pLabel)
+
+        providerPopUp = NSPopUpButton(frame: NSRect(x: 140, y: y - 4, width: fieldWidth, height: 26))
+        providerPopUp.addItems(withTitles: [
+            "Magpie 本地网关 (默认推荐)",
+            "DeepSeek 官方 API (高性价比推荐)",
+            "Ollama 本地大模型 (100% 离线隐私)",
+            "OpenAI 官方 API",
+            "自定义兼容接口 (Custom)"
+        ])
+        providerPopUp.target = self
+        providerPopUp.action = #selector(providerChanged)
+        contentView.addSubview(providerPopUp)
+
+        // API Base URL
+        y -= 45
+        contentView.addSubview(createLabel("API 接口地址:", y: y, width: labelWidth))
+        urlField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(urlField)
+
+        // API Key
+        y -= 40
+        contentView.addSubview(createLabel("API 密钥 (Key):", y: y, width: labelWidth))
+        keyField = NSSecureTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(keyField)
+
+        // Analysis Model
+        y -= 40
+        contentView.addSubview(createLabel("会话分析模型:", y: y, width: labelWidth))
+        analysisField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(analysisField)
+
+        // Report Model
+        y -= 40
+        contentView.addSubview(createLabel("深度复盘模型:", y: y, width: labelWidth))
+        reportField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(reportField)
+
+        // Status Label (连接测试状态反馈)
+        y -= 38
+        statusLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 20))
+        statusLabel.isBezeled = false
+        statusLabel.isEditable = false
+        statusLabel.drawsBackground = false
+        statusLabel.font = NSFont.systemFont(ofSize: 11)
+        statusLabel.textColor = .secondaryLabelColor
+        contentView.addSubview(statusLabel)
+
+        // 按钮区域
+        y -= 40
+        let testBtn = NSButton(frame: NSRect(x: 140, y: y, width: 100, height: 28))
+        testBtn.title = "测试连接"
+        testBtn.bezelStyle = .rounded
+        testBtn.target = self
+        testBtn.action = #selector(testConnection)
+        contentView.addSubview(testBtn)
+
+        let cancelBtn = NSButton(frame: NSRect(x: 275, y: y, width: 85, height: 28))
+        cancelBtn.title = "取消"
+        cancelBtn.bezelStyle = .rounded
+        cancelBtn.target = self
+        cancelBtn.action = #selector(cancelAction)
+        contentView.addSubview(cancelBtn)
+
+        let saveBtn = NSButton(frame: NSRect(x: 365, y: y, width: 95, height: 28))
+        saveBtn.title = "保存生效"
+        saveBtn.bezelStyle = .rounded
+        saveBtn.keyEquivalent = "\r"
+        saveBtn.target = self
+        saveBtn.action = #selector(saveSettings)
+        contentView.addSubview(saveBtn)
+    }
+
+    private func createLabel(_ text: String, y: CGFloat, width: CGFloat) -> NSTextField {
+        let label = NSTextField(frame: NSRect(x: 10, y: y + 2, width: width, height: 20))
+        label.stringValue = text
+        label.isBezeled = false
+        label.isEditable = false
+        label.drawsBackground = false
+        label.alignment = .right
+        label.font = NSFont.systemFont(ofSize: 12)
+        label.textColor = .labelColor
+        return label
+    }
+
+    @objc private func providerChanged() {
+        let idx = providerPopUp.indexOfSelectedItem
+        switch idx {
+        case 0: // Magpie
+            urlField.stringValue = "http://127.0.0.1:3425/v1"
+            keyField.stringValue = "magpie-local"
+            analysisField.stringValue = "group/fast-scan"
+            reportField.stringValue = "group/smart-router"
+        case 1: // DeepSeek
+            urlField.stringValue = "https://api.deepseek.com/v1"
+            if keyField.stringValue == "magpie-local" || keyField.stringValue == "ollama" { keyField.stringValue = "" }
+            analysisField.stringValue = "deepseek-chat"
+            reportField.stringValue = "deepseek-chat"
+        case 2: // Ollama
+            urlField.stringValue = "http://127.0.0.1:11434/v1"
+            keyField.stringValue = "ollama"
+            analysisField.stringValue = "qwen2.5:7b"
+            reportField.stringValue = "qwen2.5:14b"
+        case 3: // OpenAI
+            urlField.stringValue = "https://api.openai.com/v1"
+            if keyField.stringValue == "magpie-local" || keyField.stringValue == "ollama" { keyField.stringValue = "" }
+            analysisField.stringValue = "gpt-4o-mini"
+            reportField.stringValue = "gpt-4o"
+        default:
+            break
+        }
+    }
+
+    private func loadCurrentConfig() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let configPath = "\(home)/.otus/config.json"
+        var url = "http://127.0.0.1:3425/v1"
+        var key = "magpie-local"
+        var analysis = "group/fast-scan"
+        var report = "group/smart-router"
+
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let u = json["llmApiBase"] as? String { url = u }
+            if let k = json["llmApiKey"] as? String { key = k }
+            if let a = json["analysisModel"] as? String { analysis = a }
+            if let r = json["reportModel"] as? String { report = r }
+        }
+
+        urlField.stringValue = url
+        keyField.stringValue = key
+        analysisField.stringValue = analysis
+        reportField.stringValue = report
+
+        if url.contains("127.0.0.1:3425") {
+            providerPopUp.selectItem(at: 0)
+        } else if url.contains("deepseek.com") {
+            providerPopUp.selectItem(at: 1)
+        } else if url.contains("11434") {
+            providerPopUp.selectItem(at: 2)
+        } else if url.contains("openai.com") {
+            providerPopUp.selectItem(at: 3)
+        } else {
+            providerPopUp.selectItem(at: 4)
+        }
+    }
+
+    @objc private func testConnection() {
+        statusLabel.stringValue = "正在测试连接..."
+        statusLabel.textColor = .secondaryLabelColor
+
+        let urlStr = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let keyStr = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        guard let url = URL(string: "\(urlStr)/models") else {
+            statusLabel.stringValue = "✕ API 地址无效"
+            statusLabel.textColor = .systemRed
+            return
+        }
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = 4.0
+        if !keyStr.isEmpty {
+            req.setValue("Bearer \(keyStr)", forHTTPHeaderField: "Authorization")
+        }
+
+        URLSession.shared.dataTask(with: req) { _, response, error in
+            DispatchQueue.main.async {
+                if let error = error {
+                    self.statusLabel.stringValue = "✕ 连接失败: \(error.localizedDescription)"
+                    self.statusLabel.textColor = .systemRed
+                    return
+                }
+                if let http = response as? HTTPURLResponse {
+                    if (200...299).contains(http.statusCode) {
+                        self.statusLabel.stringValue = "✓ 连接成功 (HTTP \(http.statusCode))"
+                        self.statusLabel.textColor = .systemGreen
+                    } else {
+                        self.statusLabel.stringValue = "✕ 响应异常 (HTTP \(http.statusCode))"
+                        self.statusLabel.textColor = .systemRed
+                    }
+                }
+            }
+        }.resume()
+    }
+
+    @objc private func cancelAction() {
+        self.window?.close()
+    }
+
+    @objc private func saveSettings() {
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let dir = "\(home)/.otus"
+        let configPath = "\(dir)/config.json"
+
+        var dict: [String: Any] = [:]
+        if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            dict = existing
+        }
+
+        dict["llmApiBase"] = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        dict["llmApiKey"] = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        dict["analysisModel"] = analysisField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        dict["reportModel"] = reportField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let outData = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted) {
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? outData.write(to: URL(fileURLWithPath: configPath))
+        }
+
+        self.window?.close()
     }
 }
 
