@@ -226,12 +226,12 @@ class SettingsWindowController: NSWindowController {
         guard let contentView = window?.contentView else { return }
 
         var y: CGFloat = 360
-        let labelWidth: CGFloat = 105
-        let fieldWidth: CGFloat = 335
-        let fieldX: CGFloat = 135
+        let labelWidth: CGFloat = 108
+        let fieldWidth: CGFloat = 330
+        let fieldX: CGFloat = 140
 
         // 1. 预设提供商下拉选择
-        contentView.addSubview(createLabel("服务提供商:", y: y, width: labelWidth))
+        contentView.addSubview(createLabel("服务提供商", y: y, width: labelWidth))
 
         providerPopUp = NSPopUpButton(frame: NSRect(x: fieldX, y: y - 4, width: fieldWidth, height: 26))
         providerPopUp.addItems(withTitles: [
@@ -247,34 +247,34 @@ class SettingsWindowController: NSWindowController {
 
         // 2. 主 API Base URL
         y -= 40
-        contentView.addSubview(createLabel("API 接口地址:", y: y, width: labelWidth))
+        contentView.addSubview(createLabel("API 接口地址", y: y, width: labelWidth))
         urlField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(urlField)
 
         // 3. 主 API Key
         y -= 38
-        contentView.addSubview(createLabel("API 密钥 (Key):", y: y, width: labelWidth))
+        contentView.addSubview(createLabel("API 密钥 (Key)", y: y, width: labelWidth))
         keyField = NSSecureTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(keyField)
 
-        // 4. 会话分析模型 + ⓘ 信息图标
+        // 4. 会话分析模型 + ⓘ 纯悬停信息图标 (无冒号、不可点击)
         y -= 38
-        contentView.addSubview(createLabel("会话分析模型:", y: y, width: labelWidth))
+        contentView.addSubview(createLabel("会话分析模型", y: y, width: labelWidth))
         let aTip = "【白天高频微会话分析】\n每当切屏或累积活动时自动在后台触发，负责切分会话并提取项目和标签。\n推荐使用毫秒级响应的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan）。"
-        let aInfoBtn = createInfoButton(x: labelWidth + 12, y: y + 2, tip: aTip, action: #selector(showAnalysisInfo))
-        contentView.addSubview(aInfoBtn)
+        let aInfoIcon = createInfoIcon(x: labelWidth + 13, y: y + 4, tip: aTip)
+        contentView.addSubview(aInfoIcon)
 
         analysisField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         analysisField.placeholderString = "例如：group/fast-scan 或 deepseek-chat"
         analysisField.toolTip = aTip
         contentView.addSubview(analysisField)
 
-        // 5. 深度复盘模型 + ⓘ 信息图标
+        // 5. 深度复盘模型 + ⓘ 纯悬停信息图标 (无冒号、不可点击)
         y -= 38
-        contentView.addSubview(createLabel("深度复盘模型:", y: y, width: labelWidth))
+        contentView.addSubview(createLabel("深度复盘模型", y: y, width: labelWidth))
         let rTip = "【晚间全天深度复盘】\n每天仅生成日终报告时触发一次，需长上下文梳理全天代码决策与攻坚历程。\n推荐使用推理旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router）。"
-        let rInfoBtn = createInfoButton(x: labelWidth + 12, y: y + 2, tip: rTip, action: #selector(showReportInfo))
-        contentView.addSubview(rInfoBtn)
+        let rInfoIcon = createInfoIcon(x: labelWidth + 13, y: y + 4, tip: rTip)
+        contentView.addSubview(rInfoIcon)
 
         reportField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         reportField.placeholderString = "例如：group/smart-router 或 gpt-4o"
@@ -288,15 +288,15 @@ class SettingsWindowController: NSWindowController {
         customReportCheck.font = NSFont.systemFont(ofSize: 11.5)
         contentView.addSubview(customReportCheck)
 
-        // 7. 独立复盘接口字段 (受勾选框控制启用/置灰)
+        // 7. 独立复盘接口字段 (受勾选框控制启用/置灰，无冒号)
         y -= 34
-        reportUrlLabel = createLabel("复盘 API 接口:", y: y, width: labelWidth)
+        reportUrlLabel = createLabel("复盘 API 接口", y: y, width: labelWidth)
         contentView.addSubview(reportUrlLabel)
         reportUrlField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(reportUrlField)
 
         y -= 36
-        reportKeyLabel = createLabel("复盘 API 密钥:", y: y, width: labelWidth)
+        reportKeyLabel = createLabel("复盘 API 密钥", y: y, width: labelWidth)
         contentView.addSubview(reportKeyLabel)
         reportKeyField = NSSecureTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(reportKeyField)
@@ -348,32 +348,13 @@ class SettingsWindowController: NSWindowController {
         return label
     }
 
-    private func createInfoButton(x: CGFloat, y: CGFloat, tip: String, action: Selector) -> NSButton {
-        let btn = NSButton(frame: NSRect(x: x, y: y, width: 16, height: 16))
-        btn.isBordered = false
-        let conf = NSImage.SymbolConfiguration(pointSize: 11.5, weight: .regular)
-        btn.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "说明")?.withSymbolConfiguration(conf)
-        btn.contentTintColor = .secondaryLabelColor
-        btn.toolTip = tip
-        btn.target = self
-        btn.action = action
-        return btn
-    }
-
-    @objc private func showAnalysisInfo() {
-        let alert = NSAlert()
-        alert.messageText = "会话分析模型说明"
-        alert.informativeText = "【白天高频微会话分析】\n\n• 触发时机：全天后台静默高频触发（应用切换、输入停顿聚类时）。\n• 核心职责：微会话切分、提取活跃项目名、实体标签与操作摘要。\n• 推荐模型：低延迟、低并发成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan）。单次分析仅耗时数十至数百毫秒。"
-        alert.alertStyle = .informational
-        alert.runModal()
-    }
-
-    @objc private func showReportInfo() {
-        let alert = NSAlert()
-        alert.messageText = "深度复盘模型说明"
-        alert.informativeText = "【晚间全天日记深度复盘】\n\n• 触发时机：晚间自动生成折腾日记或手动复盘时触发（每天仅 1 次）。\n• 核心职责：长上下文推理，提炼全天技术攻坚脉络、代码决策与第一人称叙事故事。\n• 推荐模型：高智能、长上下文推理的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router）。"
-        alert.alertStyle = .informational
-        alert.runModal()
+    private func createInfoIcon(x: CGFloat, y: CGFloat, tip: String) -> NSImageView {
+        let iv = NSImageView(frame: NSRect(x: x, y: y, width: 14, height: 14))
+        let conf = NSImage.SymbolConfiguration(pointSize: 11, weight: .regular)
+        iv.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "说明")?.withSymbolConfiguration(conf)
+        iv.contentTintColor = .secondaryLabelColor
+        iv.toolTip = tip
+        return iv
     }
 
     @objc private func toggleCustomReport() {
