@@ -124,28 +124,36 @@ async function main() {
         checkAndBackfillYesterdayReport().catch(() => {});
       };
 
-      // 3. 定时巡检：每 30 分钟检查一次（晚间 21:00+ 生成当天报告，同时自动补漏昨日报告）
+      // 3. 定时巡检：每 15 分钟检查一次
+      // 晚间 22:00 起自动触发当天的日终报告（每天仅自动生成 1 次，避免频繁消耗 Token 与通知打扰）
+      let lastAutoReportDateKey = "";
+
       const autoReportTimer = setInterval(() => {
         const now = new Date();
         const hour = now.getHours();
-        // 晚间 21:00 至 23:59 自动静默生成当天日终报告并推送系统通知
-        if (hour >= 21) {
-          renderer.renderHtmlReport().then(() => {
-            const today = getLocalDateKey(now);
+        const today = getLocalDateKey(now);
+
+        // 晚间 22:00 起自动触发全天终版报告（每天仅自动执行 1 次）
+        if (hour >= 22 && lastAutoReportDateKey !== today) {
+          lastAutoReportDateKey = today;
+          renderer.renderHtmlReport(today, { force: true }).then(() => {
             const summary = store.getSummary("daily", today);
             const stats = summary?.stats?.reportStats || {};
             sendDesktopNotification({
               title: "🦉 Otus 个人折腾日记",
-              subtitle: "今日日终报告已生成",
+              subtitle: "今日日终心流报告已就绪",
               message: `今日活跃 ${stats.totalActiveMinutes || 0}m，${stats.analyzedCount || 0} 个实质折腾已归类为 ${stats.clusterCount || 0} 个核心主题。`
             });
-          }).catch((err) =>
-            console.error("[Otus] Auto evening report generation error:", err)
-          );
+          }).catch((err) => {
+            console.error("[Otus] Auto evening report generation error:", err);
+            // 失败时允许下次巡检重试
+            lastAutoReportDateKey = "";
+          });
         }
+
         // 白天及任意时段检查昨日报告是否有遗漏未生成（如昨夜提前合盖或关机）
         checkAndBackfillYesterdayReport().catch(() => {});
-      }, 30 * 60 * 1000);
+      }, 15 * 60 * 1000);
 
       const shutdown = () => {
         console.log("\n[Otus] Graceful shutdown initiated...");
