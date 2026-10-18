@@ -3,7 +3,7 @@ name: otus-journal
 description: >-
   Generate, inspect, and analyze developer daily tinkering journals and focus flow reports from Otus activity records.
   Use this skill whenever the user asks about their day or recent activities ("今天干了些啥", "看看今天的日报", "生成今日报告", "回顾昨天的折腾", "我今天做了什么", "个人折腾日记", "打工日记", "what did I do today", "recap my day", "otus report", "时间去哪了").
-  Follows Alma's sample-based visual constraint and supports both structured HTML report generation and freestyle technical debriefs.
+  Follows sample-based visual constraints and supports both structured HTML report generation and freestyle technical debriefs.
 ---
 
 # Otus 个人折腾日记技能 (Otus Journal Skill)
@@ -16,7 +16,7 @@ description: >-
 
 > [!IMPORTANT]
 > **严禁脱离模板生成散乱 HTML**。
-> 本技能遵循 Alma 的 **Sample-based 视觉约束机制**，所有 HTML 产物必须严格遵循 [references/sample.html](./references/sample.html) 规范：
+> 本技能遵循 **Sample-based 视觉约束机制**，所有 HTML 产物必须严格遵循 [references/sample.html](./references/sample.html) 规范：
 > 1. **全天心流热力矩阵**：07:00–22:00 共 180 个 5 分钟正方形切片，GitHub 绿阶与动态主题光谱双模式；
 > 2. **等高容器布局**：“时间去哪了”（Top 10 主题分类）与“全天时间线”容器高度严格固定为 **520px**，内嵌细滚动条；
 > 3. **极简单行时间线**：严格单行流式排版 `[时间 HH:mm]` + `[时长 badge]` + `[精炼中文标题]` + `[主题标签 pill]`，严禁在行内堆砌多行原始 OCR 代码块；

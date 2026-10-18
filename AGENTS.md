@@ -14,7 +14,7 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
 | **`assets/AppIcon.png`** | **唯一官方定版 Logo / App Icon** | 1024×1024 像素，严格遵循 Apple HIG 规范的 824px Squircle（超椭圆）与外围 100% 透明 Alpha 通道，内嵌原生高斯阴影。用于所有应用图标、头像、宣传图角标。 |
 | **`assets/logo.webp`** | **Web / README 高性能轻量 Logo** | 512×512 像素，仅 28KB 高性能 WebP，保留完整透明通道与柔和投影，供 GitHub README 与网页端毫秒级秒开渲染。 |
 | **`assets/logo-source.jpg`** | **原版高清母稿** | 1024×1024 高分辨率未裁切母稿，供后续制作宣传海报、全屏背景、Banner 或衍生宣传物料时提取素材。 |
-| **`assets/template.html`** | **日终心流报告模板** | 1:1 复刻 Alma 的 180 格（07:00–22:00）GitHub 绿阶心流矩阵与任务雷达图。 |
+| **`assets/template.html`** | **日终心流报告模板** | 标准 180 格（07:00–22:00）GitHub 绿阶心流矩阵与任务雷达图。 |
 
 ### 品牌设计语言（Design System）
 - **核心符号**：黄金分割几何雷达与同心圆声纳构成的极简夜枭（象征深夜全天候静默守护的极客助手）；
@@ -36,8 +36,8 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
    - **数据库**：原生 `node:sqlite`（开启 `journal_mode=WAL` 与 `busy_timeout=5000`）；
    - **依赖原则**：**0 外部 NPM 依赖**（`package.json` 中无 `dependencies`）；
    - **macOS 底层交互**：采用独立 Swift 脚本（`native/*.swift`），由构建脚本编译为独立二进制执行。
-3. **1:1 对标 Alma 核心机制**：
-   - **会话切分与总结**：采用 Jaccard 相似度 $\ge 0.18$ 聚类，严格遵循 Alma 原版 Hard Rules Prompt；
+3. **高保真记录与总结机制**：
+   - **会话切分与总结**：采用 Jaccard 相似度 $\ge 0.18$ 聚类，严格遵循防幻觉 Hard Rules 约束体系；
    - **隐私保护**：入库与调用 LLM 前必须经过 `src/redactor.ts`（脱敏 API Key、私钥、Token）；
    - **图像判重**：截图经 `sips` 压缩至 1280px + 质量 40，并通过 `native/img-diff.swift`（32-bin 归一化灰度直方图 + 巴氏距离）过滤 $<5\%$ 的微变静止帧；
    - **系统休眠**：监听 `willSleep` / `didWake` 广播，合盖自动闭合会话，唤醒干净重置。

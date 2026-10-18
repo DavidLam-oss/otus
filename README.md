@@ -5,32 +5,34 @@
 <h1 align="center">Otus (鸺鹠)</h1>
 
 <p align="center">
-  <strong>1:1 复刻 Alma 核心架构的超轻量 macOS 后台静默记录与晚间个人折腾日记生成器</strong><br>
-  <em>剥离臃肿宿主 · 纯粹原汁原味 · 零外部 NPM 依赖 · 单进程常驻</em>
+  <strong>超轻量 macOS 原生后台静默记录与晚间个人折腾日记生成器</strong><br>
+  <em>剥离臃肿宿主 · 纯粹原生 Headless · 零外部 NPM 依赖 · 单进程常驻</em>
 </p>
 
 ---
 
 ## 🌟 为什么做 Otus？
 
-Alma 是一款非常出色的桌面 AI 伴侣，其最打动人心的功能莫过于：**白天后台无感静默记录动态，晚间自动生成一份详实的第一人称“个人折腾日记”与 GitHub 绿阶心流矩阵**。
+Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实渴望：**白天后台无感静默记录开发轨迹与技术攻坚，晚间自动生成一份详实的第一人称“个人折腾日记”与 180 槽位 GitHub 绿阶心流矩阵**。
 
-但在日常使用中，官方客户端捆绑了繁重的 Electron 渲染框架、聊天界面、长驻子进程与高耗电。**Otus 的目标是：彻底剥离其臃肿的宿主外壳，100% 忠实复刻 Alma 原生验证可行的底层记录与总结链路，跑出一个干净、极简、无负担的基线版本。**
+桌面伴侣软件 Alma 提供了极富创意的记录与复盘理念，但在日常使用中，官方应用往往捆绑了庞大的 Electron 渲染框架、聊天界面、长驻子进程与可观的资源开销。**Otus 将其软件中这套最具价值的“后台静默记录与日终折腾复盘”核心链路独立抽取出来，基于 macOS 原生技术栈进行了彻底的重新实现——算是一种吸收、借鉴与极简重构。**
+
+我们彻底舍弃了前端重型外壳与无谓开销，做到了真正的 **0 外部 NPM 依赖**、**常驻内存 ~40MB**、**待机 CPU 0.0%** 的单二进制极客基线版本。
 
 ---
 
-## 🏗️ 核心架构与 1:1 对标
+## 🏗️ 核心架构与技术实现
 
-| 核心组件 | 对标 Alma 实现 | Otus 原生实现细节 |
+| 核心模块 | 设计定位 | Otus 原生实现细节 |
 | :--- | :--- | :--- |
-| **持久化存储** | SQLite 5 表关系模型 | `activity_sessions` / `snapshots` / `ocr_frames` / `events` / `summaries`，基于 Node 26 原生 `node:sqlite`，**0 外部依赖** |
-| **事件感知** | `alma-input-monitor` | 原生 Swift 编译二进制，通过 Cocoa Global Monitor 捕获按键停顿、点击、应用焦点切换与锁屏 |
-| **屏幕捕获与 OCR** | `alma-ocr` | 原生 `screencapture -x -C` 静音抓拍 + 图像哈希判重 + Apple Vision 框架精准离线 OCR |
-| **浏览器穿透** | `alma-browser-tab` | 原生常驻 AppleScript 进程，毫秒级读取 Chrome、Safari 等活跃标签 URL 与页面标题 |
-| **微会话分析** | `ActivityAnalyzer` | 异步状态机会话切分，采用 Alma 原版 Prompt 提取 Project、Topics、Highlights 与结构化 Entities（PR/Issue/Commit） |
-| **日终报告引擎** | `ActivitySummarizer` | **零 Token 本地 Jaccard 聚类算法**（相似度 $\ge 0.18$）生成结构化 Markdown 骨架 + 严苛防幻觉 Hard Rules 润色 |
-| **心流热力图** | `template.html` | 完整复刻 07:00–22:00（15×12=180 格）GitHub 绿阶心流矩阵、小时专注雷达与任务占比图 |
-| **磁盘生命周期** | `ActivityRotator` | 自动轮转管理快照存储，定期释放过期大图，元数据永久归档 SQLite |
+| **持久化存储** | SQLite 5 表时序模型 | `activity_sessions` / `snapshots` / `ocr_frames` / `events` / `summaries`，基于 Node 26 原生 `node:sqlite`（开启 WAL），**0 外部 NPM 依赖** |
+| **事件感知** | 低开销系统事件监听 | 原生 Swift 编译二进制（`otus-input-monitor`），通过 Cocoa Global Monitor 捕获按键停顿、点击、窗口焦点切换与锁屏休眠 |
+| **屏幕捕获与 OCR** | 差分判重与离线光学识别 | 原生 `screencapture -x -C` 静音抓拍 + 32-bin 归一化灰度直方图巴氏距离过滤微变静止帧 + Apple Vision 框架精准离线 OCR |
+| **浏览器穿透** | 活跃标签智能感知 | 原生常驻 AppleScript 进程，毫秒级读取 Chrome、Safari 等活跃标签 URL 与页面标题 |
+| **微会话分析** | 异步微会话切分与实体抽取 | 异步状态机会话切分，精准提取 Project、Topics、Highlights 与结构化 Entities（PR/Issue/Commit） |
+| **日终复盘引擎** | 智能聚类与第一人称叙事 | **零 Token 本地 Jaccard 聚类算法**（相似度 $\ge 0.18$）生成结构化 Markdown 骨架 + 严苛防幻觉 Hard Rules 深度润色 |
+| **心流热力图** | 全天 180 格心流矩阵 | 完整渲染 07:00–22:00（15×12=180 格）GitHub 绿阶心流矩阵、小时专注雷达与任务占比图 |
+| **磁盘生命周期** | 磁盘自愈与自动轮转 | 自动轮转管理快照存储（默认 10GB 磁盘硬上限），过期大图自动 FIFO 清理，结构化元数据永久归档 SQLite |
 
 ---
 

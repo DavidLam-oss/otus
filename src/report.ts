@@ -143,7 +143,7 @@ export class ReportRenderer {
       cssRules.push(`.topic.t-misc { background: rgba(139,148,158,0.15); color: #8b949e; border: 1px solid rgba(139,148,158,0.3); }`);
     }
 
-    // 5. 构建时间线 tlData: [timeStr, durationStr, title, topicKey] (1:1 对标 Alma)
+    // 5. 构建时间线 tlData: [timeStr, durationStr, title, topicKey]
     const tlData: [string, string, string, string][] = [];
     for (const s of analyzedSessions) {
       const d = new Date(s.startedAt);
@@ -239,7 +239,7 @@ export class ReportRenderer {
     `;
     html = html.replace(/<!--__OTUS_THEMATIC_DEEP_DIVE__-->/g, deepDiveHtml);
 
-    // 工作流复盘与洞察（对标 Alma 风格的高价值卡片）
+    // 工作流复盘与洞察（高价值复盘卡片）
     let insightsHtml = "";
     if (reportData.insights && reportData.insights.length > 0) {
       insightsHtml = reportData.insights

@@ -622,7 +622,7 @@ export class ActivitySummarizer {
       console.warn("[ActivitySummarizer] LLM insights generation failed, using heuristic fallback:", err);
     }
 
-    // 启发式高质量洞察兜底（对齐 Alma 风格）
+    // 启发式高质量洞察兜底
     const fallback: Array<{ type: string; tag: string; title: string; content: string }> = [];
     const topApp = stats.topApps?.[0]?.app || "代码编辑器";
     const topAppMins = stats.topApps?.[0]?.minutes || 0;
