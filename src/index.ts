@@ -3,7 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execSync, spawn } from "node:child_process";
-import { defaultConfig, DATA_DIR, getLocalDateKey } from "./config.ts";
+import { defaultConfig, DATA_DIR, CONFIG_FILE, saveUserConfig, getEffectiveConfig, getLocalDateKey, type OtusConfig } from "./config.ts";
 import { ActivityStore } from "./store.ts";
 import { ActivityRecorderService } from "./recorder.ts";
 import { ActivityAnalyzer } from "./analyzer.ts";
@@ -302,6 +302,77 @@ async function main() {
       break;
     }
 
+    case "config": {
+      const sub = args[1];
+      if (sub === "set") {
+        const key = args[2];
+        const val = args[3];
+        if (!key || val === undefined) {
+          console.log(`
+Usage: otus config set <key> <value>
+
+Supported keys:
+  url, llmApiBase          LLM API base URL (e.g. https://api.openai.com/v1)
+  key, llmApiKey           LLM API Key
+  analysis, analysisModel  Fast model for session analysis (e.g. gpt-4o-mini, deepseek-chat)
+  report, reportModel      Reasoning model for daily summary (e.g. gpt-4o, claude-3-5-sonnet)
+          `);
+          return;
+        }
+
+        const keyMap: Record<string, keyof OtusConfig> = {
+          url: "llmApiBase",
+          llmapibase: "llmApiBase",
+          key: "llmApiKey",
+          llmapikey: "llmApiKey",
+          analysis: "analysisModel",
+          analysismodel: "analysisModel",
+          report: "reportModel",
+          reportmodel: "reportModel"
+        };
+
+        const targetKey = keyMap[key.toLowerCase()] || (key as keyof OtusConfig);
+        saveUserConfig({ [targetKey]: val });
+        console.log(`[Otus] Updated ${targetKey} = "${val}" in ${CONFIG_FILE}`);
+        console.log(`[Otus] Note: If daemon is running, restart it to apply changes (otus stop && otus daemon).`);
+        return;
+      }
+
+      const conf = getEffectiveConfig();
+      console.log(`
+=========================================
+ Otus Configuration (${CONFIG_FILE})
+=========================================
+LLM API Base:      ${conf.llmApiBase}
+LLM API Key:       ${conf.llmApiKey ? conf.llmApiKey.slice(0, 4) + "..." + conf.llmApiKey.slice(-4) : "(not set)"}
+Analysis Model:    ${conf.analysisModel}
+Report Model:      ${conf.reportModel}
+Storage Limit:     ${(conf.maxStorageBytes / (1024 * 1024 * 1024)).toFixed(1)} GB
+Snapshot Quality:  ${conf.snapshotQuality}% (max width: ${conf.snapshotMaxWidth}px)
+=========================================
+
+Quick Setup Examples:
+  # 1. 使用 DeepSeek:
+  otus config set url https://api.deepseek.com/v1
+  otus config set key sk-your-key
+  otus config set analysis deepseek-chat
+  otus config set report deepseek-chat
+
+  # 2. 使用本地完全离线 Ollama:
+  otus config set url http://127.0.0.1:11434/v1
+  otus config set key ollama
+  otus config set analysis qwen2.5:7b
+  otus config set report qwen2.5:14b
+
+  # 3. 使用标准 OpenAI:
+  otus config set url https://api.openai.com/v1
+  otus config set key sk-proj-xxx
+  otus config set analysis gpt-4o-mini
+  otus config set report gpt-4o
+      `);
+      break;
+    }
+
     case "test-capture": {
       console.log("[Otus] Testing capture and Vision OCR on active screen...");
       const recorder = new ActivityRecorderService(store, defaultConfig);
@@ -332,6 +403,7 @@ Commands:
   daemon, start       Start background recording daemon
   stop                Stop background recording daemon
   status              Check daemon status & today's session summary
+  config              View or set LLM gateway, API keys, and models
   report [dateKey]    Print daily tinkering journal markdown (e.g. 2026-10-17)
   export [dateKey]    Generate & open HTML daily flow report in browser
   test-capture        Take an immediate snapshot & test native Vision OCR

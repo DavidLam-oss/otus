@@ -1,8 +1,10 @@
+import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 
 const homeDir = os.homedir();
 export const DATA_DIR = path.join(homeDir, ".otus");
+export const CONFIG_FILE = path.join(DATA_DIR, "config.json");
 export const DB_PATH = path.join(DATA_DIR, "data.db");
 export const SNAPSHOTS_DIR = path.join(DATA_DIR, "snapshots");
 export const BIN_DIR = path.join(DATA_DIR, "bin");
@@ -45,7 +47,7 @@ export interface OtusConfig {
   reportModel: string;
 }
 
-export const defaultConfig: OtusConfig = {
+export const baseConfig: OtusConfig = {
   outputDir: DATA_DIR,
   dbPath: DB_PATH,
   snapshotsDir: SNAPSHOTS_DIR,
@@ -74,10 +76,45 @@ export const defaultConfig: OtusConfig = {
   snapshotMaxWidth: 1280,
   snapshotQuality: 40,
 
-  // 默认直接对齐本地 Magpie 网关，亦可通过环境变量覆盖
-  llmApiBase: process.env.OTUS_LLM_URL || "http://127.0.0.1:3425/v1",
-  llmApiKey: process.env.OTUS_LLM_KEY || "magpie-local",
-  analysisModel: process.env.OTUS_ANALYSIS_MODEL || "group/fast-scan",
-  reportModel: process.env.OTUS_REPORT_MODEL || "group/smart-router"
+  // 默认对齐本地 Magpie 网关，用户无 Magpie 时可通过 ~/.otus/config.json 或环境变量覆盖为任意 OpenAI 兼容服务
+  llmApiBase: "http://127.0.0.1:3425/v1",
+  llmApiKey: "magpie-local",
+  analysisModel: "group/fast-scan",
+  reportModel: "group/smart-router"
 };
+
+export function loadUserConfig(): Partial<OtusConfig> {
+  if (fs.existsSync(CONFIG_FILE)) {
+    try {
+      const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
+      return JSON.parse(raw);
+    } catch (err) {
+      console.error(`[Otus] Failed to parse config file at ${CONFIG_FILE}:`, err);
+    }
+  }
+  return {};
+}
+
+export function saveUserConfig(updates: Partial<OtusConfig>): OtusConfig {
+  fs.mkdirSync(DATA_DIR, { recursive: true });
+  const current = loadUserConfig();
+  const merged = { ...current, ...updates };
+  fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2), "utf-8");
+  return getEffectiveConfig();
+}
+
+export function getEffectiveConfig(): OtusConfig {
+  const user = loadUserConfig();
+  return {
+    ...baseConfig,
+    ...user,
+    // 环境变量优先级最高
+    llmApiBase: process.env.OTUS_LLM_URL || user.llmApiBase || baseConfig.llmApiBase,
+    llmApiKey: process.env.OTUS_LLM_KEY || user.llmApiKey || baseConfig.llmApiKey,
+    analysisModel: process.env.OTUS_ANALYSIS_MODEL || user.analysisModel || baseConfig.analysisModel,
+    reportModel: process.env.OTUS_REPORT_MODEL || user.reportModel || baseConfig.reportModel,
+  };
+}
+
+export const defaultConfig: OtusConfig = getEffectiveConfig();
 

@@ -78,18 +78,42 @@ Alma 是一款非常出色的桌面 AI 伴侣，其最打动人心的功能莫�
 
 ---
 
-## 🔑 LLM 配置（可选）
+## 🔑 LLM 模型与网关配置
 
-Otus 具备完善的离线启发式分析兜底（未配置任何 API 亦可 100% 正常抓拍、OCR 与输出本地结构化骨架）。
+Otus 支持任意兼容 OpenAI 协议的接口（包括本地 Ollama、DeepSeek、OpenAI、SiliconFlow 或 Magpie 网关）。具备完善的离线启发式分析兜底（未配置任何 API 亦可 100% 正常运行）。
 
-如需启用大模型深度总结与第一人称润色，可在终端或环境变量中配置兼容 OpenAI 的接口：
+### 1. 命令行快速配置 (`otus config`)
+
+无需手动修改环境变量，直接通过命令行配置并持久化到 `~/.otus/config.json`：
 
 ```bash
-export OTUS_LLM_URL="https://api.openai.com/v1"   # 或本地 Magpie / Ollama 网关
-export OTUS_LLM_KEY="your-api-key"
-export OTUS_ANALYSIS_MODEL="deepseek-chat"        # 白天微会话小结模型
-export OTUS_REPORT_MODEL="deepseek-chat"          # 晚间日记润色模型
+# 查看当前生效配置
+otus config
+
+# 示例 1: 使用 DeepSeek
+otus config set url https://api.deepseek.com/v1
+otus config set key sk-your-key
+otus config set analysis deepseek-chat
+otus config set report deepseek-chat
+
+# 示例 2: 使用本地 100% 离线 Ollama
+otus config set url http://127.0.0.1:11434/v1
+otus config set key ollama
+otus config set analysis qwen2.5:7b
+otus config set report qwen2.5:14b
+
+# 示例 3: 使用官方 OpenAI
+otus config set url https://api.openai.com/v1
+otus config set key sk-proj-xxx
+otus config set analysis gpt-4o-mini
+otus config set report gpt-4o
 ```
+
+### 2. 配置文件与环境变量优先级
+
+1. **环境变量**（最高优先级，适合容器与临时调试）：`OTUS_LLM_URL` / `OTUS_LLM_KEY` / `OTUS_ANALYSIS_MODEL` / `OTUS_REPORT_MODEL`
+2. **本地配置**：`~/.otus/config.json`
+3. **默认网关**：未配置时默认连接本机 Magpie 网关 (`http://127.0.0.1:3425/v1`)，连接失败自动无缝降级为**本地离线启发式引擎**，零报错。
 
 ---
 
