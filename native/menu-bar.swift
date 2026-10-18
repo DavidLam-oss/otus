@@ -253,16 +253,31 @@ class SettingsWindowController: NSWindowController {
         y -= 40
         contentView.addSubview(createLabel("会话分析模型:", y: y, width: labelWidth))
         analysisField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        analysisField.placeholderString = "例如：group/fast-scan 或 deepseek-chat"
+        analysisField.toolTip = "【白天高频微会话分析】推荐使用低延迟、低成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan），每次分析仅耗时数百毫秒。"
         contentView.addSubview(analysisField)
 
         // Report Model
         y -= 40
         contentView.addSubview(createLabel("深度复盘模型:", y: y, width: labelWidth))
         reportField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        reportField.placeholderString = "例如：group/smart-router 或 gpt-4o"
+        reportField.toolTip = "【晚间全天日记深度复盘】推荐使用具备复杂上下文推理与代码理解能力的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router），能够提炼全天技术攻坚脉络与代码决策。"
         contentView.addSubview(reportField)
 
+        // 说明提示
+        y -= 26
+        let tipLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 18))
+        tipLabel.stringValue = "💡 单一平台（如 DeepSeek/OpenAI/Ollama）两个模型共用相同 API 地址与 Key"
+        tipLabel.isBezeled = false
+        tipLabel.isEditable = false
+        tipLabel.drawsBackground = false
+        tipLabel.font = NSFont.systemFont(ofSize: 10.5)
+        tipLabel.textColor = .secondaryLabelColor
+        contentView.addSubview(tipLabel)
+
         // Status Label (连接测试状态反馈)
-        y -= 38
+        y -= 24
         statusLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 20))
         statusLabel.isBezeled = false
         statusLabel.isEditable = false

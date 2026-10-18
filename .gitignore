@@ -35,4 +35,5 @@ docs/
 # Compiled native binaries
 bin/*
 !bin/otus
-
+# Distribution packages
+*.dmg

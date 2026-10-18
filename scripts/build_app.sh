@@ -118,6 +118,10 @@ chmod +x "$MACOS_DIR/Otus"
 chmod +x "$APP_DIR/bin/otus"
 chmod +x "$APP_DIR/bin/"*
 
+# 6. Ad-hoc 代码签名 (保证在 Apple Silicon 芯片与无证书 Mac 上合法加载)
+echo "[5/5] Applying ad-hoc code signature..."
+codesign --force --deep -s - "$APP_BUNDLE" 2>/dev/null || true
+
 echo "========================================="
 echo " Otus.app successfully created!"
 echo " Path: $APP_BUNDLE"
