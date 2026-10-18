@@ -124,17 +124,18 @@ async function main() {
         checkAndBackfillYesterdayReport().catch(() => {});
       };
 
-      // 3. 定时巡检：每 15 分钟检查一次
-      // 晚间 22:00 起自动触发当天的日终报告（每天仅自动生成 1 次，避免频繁消耗 Token 与通知打扰）
+      // 3. 定时巡检：每 1 分钟检测一次
+      // 晚间 23:50 自动触发当天的全天日终报告（每天仅自动生成 1 次，完整收纳晚间下班后的全部折腾活动）
       let lastAutoReportDateKey = "";
 
       const autoReportTimer = setInterval(() => {
         const now = new Date();
         const hour = now.getHours();
+        const minute = now.getMinutes();
         const today = getLocalDateKey(now);
 
-        // 晚间 22:00 起自动触发全天终版报告（每天仅自动执行 1 次）
-        if (hour >= 22 && lastAutoReportDateKey !== today) {
+        // 每天 23:50 起自动触发当天的全天折腾终版报告（仅触发 1 次）
+        if (hour === 23 && minute >= 50 && lastAutoReportDateKey !== today) {
           lastAutoReportDateKey = today;
           renderer.renderHtmlReport(today, { force: true }).then(() => {
             const summary = store.getSummary("daily", today);
@@ -146,14 +147,16 @@ async function main() {
             });
           }).catch((err) => {
             console.error("[Otus] Auto evening report generation error:", err);
-            // 失败时允许下次巡检重试
+            // 失败时允许重试
             lastAutoReportDateKey = "";
           });
         }
 
-        // 白天及任意时段检查昨日报告是否有遗漏未生成（如昨夜提前合盖或关机）
-        checkAndBackfillYesterdayReport().catch(() => {});
-      }, 15 * 60 * 1000);
+        // 每隔 15 分钟检查一次昨日报告补漏（如昨夜提前休眠合盖）
+        if (minute % 15 === 0) {
+          checkAndBackfillYesterdayReport().catch(() => {});
+        }
+      }, 60 * 1000);
 
       const shutdown = () => {
         console.log("\n[Otus] Graceful shutdown initiated...");
