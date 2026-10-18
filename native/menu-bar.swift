@@ -33,15 +33,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let appBundle = Bundle.main.bundlePath
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
-            "\(appBundle)/Contents/Resources/AppIcon.icns",
-            "\(appBundle)/Contents/Resources/app/assets/AppIcon.png",
-            "/Applications/Otus.app/Contents/Resources/AppIcon.icns",
-            "/Applications/Otus.app/Contents/Resources/app/assets/AppIcon.png",
-            "\(home)/Documents/GitHub/otus/assets/AppIcon.png"
+            "\(appBundle)/Contents/Resources/app/assets/menu-icon@2x.png",
+            "\(home)/Documents/GitHub/otus/assets/menu-icon@2x.png",
+            "\(appBundle)/Contents/Resources/app/assets/menu-icon.png",
+            "\(home)/Documents/GitHub/otus/assets/menu-icon.png",
+            "\(appBundle)/Contents/Resources/AppIcon.icns"
         ]
         for path in candidates {
             if FileManager.default.fileExists(atPath: path), let img = NSImage(contentsOfFile: path) {
                 img.size = NSSize(width: 18, height: 18)
+                img.isTemplate = true
                 return img
             }
         }
@@ -96,7 +97,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let analyzeItem = NSMenuItem(title: "立即分析会话 (Analyze)", action: #selector(runAnalyze), keyEquivalent: "r")
+        let analyzeItem = NSMenuItem(title: "立即分析最新活动 (Analyze)", action: #selector(runAnalyze), keyEquivalent: "r")
         analyzeItem.target = self
         analyzeItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
         menu.addItem(analyzeItem)
