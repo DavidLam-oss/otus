@@ -95,8 +95,15 @@ export class ActivitySummarizer {
     const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
 
     const allSessions = this.store.listSessions({ since: startOfDay, until: endOfDay, limit: 1000 });
-    const analyzedSessions = allSessions.filter((s) => s.analysisStatus === "analyzed" && s.analysisTitle);
-    const filteredSessions = allSessions.filter((s) => s.analysisStatus === "not_worth");
+    const analyzedSessions = allSessions.filter((s) => {
+      if (s.analysisStatus !== "analyzed" || !s.analysisTitle) return false;
+      const app = (s.appNames[0] || "").toLowerCase();
+      if (["loginwindow", "screensaverengine", "lockscreen", "screensaver"].includes(app)) return false;
+      const title = (s.analysisTitle || "").toLowerCase();
+      if (title.startsWith("loginwindow") || title.startsWith("idle /") || title.includes("系统锁屏闲置")) return false;
+      return true;
+    });
+    const filteredSessions = allSessions.filter((s) => s.analysisStatus === "not_worth" || !analyzedSessions.includes(s));
 
     // 提取会话的抽稀上下文
     const enriched = analyzedSessions.map((sess) => {

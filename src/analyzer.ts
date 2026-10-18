@@ -191,7 +191,7 @@ export class ActivityAnalyzer {
           project: parsed.project || null,
           highlights: Array.isArray(parsed.highlights) ? parsed.highlights : []
         });
-        return "analyzed";
+        return "not_worth";
       }
 
       this.store.setSessionAnalysis(session.id, {
@@ -221,58 +221,77 @@ export class ActivityAnalyzer {
     session: ActivitySession,
     ocrSnippets: string[],
     reason: string
-  ): "analyzed" {
-    const topApp = session.appNames[0] || "Desktop";
+  ): "analyzed" | "not_worth" {
+    // 过滤出有意义的应用（剔除锁屏、屏保系统进程）
+    const realApps = session.appNames.filter(
+      (a) => !["loginwindow", "ScreenSaverEngine", "LockScreen", "ScreenSaver"].includes(a)
+    );
+    const topApp = realApps[0] || "系统环境";
     const sampleOcr = ocrSnippets[0] || "";
 
-    // 过滤条件：无任何按键/鼠标事件且无有效 OCR 内容，或者纯系统屏保/锁屏
+    // 过滤条件：无任何实质应用、无输入事件且无有效 OCR 内容，或者包含锁屏
+    const hasLockScreen = session.appNames.some((a) =>
+      ["loginwindow", "ScreenSaverEngine", "LockScreen", "ScreenSaver"].includes(a)
+    );
     const isIdle =
-      (session.eventCount === 0 && ocrSnippets.length === 0) ||
-      (session.appNames.length > 0 &&
-        session.appNames.every((a) =>
-          ["loginwindow", "ScreenSaverEngine", "LockScreen"].includes(a)
-        ));
+      hasLockScreen ||
+      realApps.length === 0 ||
+      (session.eventCount === 0 && ocrSnippets.length === 0);
 
     if (isIdle) {
       this.store.setSessionAnalysis(session.id, {
         status: "not_worth",
-        title: `系统闲置 (${topApp})`,
-        description: `无输入事件与屏幕有效操作，离线启发式判定为闲置 (${reason.slice(0, 100)})。`,
+        title: `系统锁屏闲置`,
+        description: `锁屏或无输入事件，离线判定为闲置 (${reason.slice(0, 100)})。`,
         model: "offline-heuristic",
         worthMemory: false,
         worthKnowledge: false,
         isMeeting: false,
         entities: {},
-        topics: [topApp.toLowerCase()],
+        topics: [],
         project: null,
         highlights: []
       });
-      return "analyzed";
+      return "not_worth";
     }
 
-    // 提取可能的项目名称：从应用名称或 OCR 常见词中简单判断
+    // 提取可能的项目名称
     let inferredProject: string | null = null;
     if (session.appNames.includes("Code") || session.appNames.includes("Visual Studio Code")) {
       const match = sampleOcr.match(/([a-zA-Z0-9_-]+)\s*[-—]\s*(?:Visual Studio Code|Code)/i);
       if (match && match[1]) inferredProject = match[1];
+    } else if (sampleOcr.toLowerCase().includes("obsidian-wechat-converter")) {
+      inferredProject = "obsidian-wechat-converter";
+    } else if (sampleOcr.toLowerCase().includes("otus")) {
+      inferredProject = "otus";
     }
 
     let inferredTitle = `在 ${topApp} 中专注操作`;
     if (sampleOcr) {
-      const cleanSnippet = sampleOcr.replace(/[^\u4e00-\u9fa5a-zA-Z0-9_ -]/g, " ").replace(/\s+/g, " ").trim();
-      inferredTitle = cleanSnippet.length > 0 ? `${topApp}: ${cleanSnippet.slice(0, 32)}` : inferredTitle;
+      // 深度清洗 macOS 菜单栏与状态栏噪声
+      const cleaned = sampleOcr
+        .replace(/(?:File|Edit|View|Window|Help|History|Bookmarks|Profiles|Tab|Assistant)[\s:：]*/gi, " ")
+        .replace(/(?:文件|编辑|视图|窗口|帮助|历史|书签|标签页)[\s:：]*/g, " ")
+        .replace(/\d+\.?\d*[KMGT]?\/S/gi, " ")
+        .replace(/(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s+(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d+/gi, " ")
+        .replace(/[^\u4e00-\u9fa5a-zA-Z0-9_\-\.\:\/ ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      if (cleaned.length >= 4) {
+        inferredTitle = `${topApp}: ${cleaned.slice(0, 26)}`;
+      }
     }
 
     this.store.setSessionAnalysis(session.id, {
       status: "analyzed",
       title: inferredTitle,
-      description: `在 ${session.appNames.join("、") || topApp} 中持续操作，捕获 ${ocrSnippets.length} 个屏幕帧（离线启发式兜底）。`,
+      description: `在 ${realApps.join("、") || topApp} 中持续操作，捕获 ${ocrSnippets.length} 个屏幕帧（离线启发式兜底）。`,
       model: "offline-heuristic",
       worthMemory: false,
       worthKnowledge: false,
       isMeeting: false,
       entities: {},
-      topics: session.appNames.map((a) => a.toLowerCase()),
+      topics: realApps.map((a) => a.toLowerCase()),
       project: inferredProject,
       highlights: ocrSnippets.slice(0, 3).map((s) => s.slice(0, 60))
     });

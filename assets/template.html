@@ -588,24 +588,6 @@
   .topic.magpie { background: rgba(163,113,247,.15); color: var(--accent2); border: 1px solid rgba(163,113,247,.3); }
 
   /*__OTUS_TOPIC_CSS__*/
-
-  .item-head { display: flex; align-items: baseline; gap: 8px; width: 100%; }
-  .tl-details {
-    margin: 4px 0 2px 76px;
-    font-size: 11.5px;
-    color: var(--muted);
-    line-height: 1.5;
-    background: rgba(255, 255, 255, 0.025);
-    padding: 6px 10px;
-    border-radius: 6px;
-    border-left: 2px solid rgba(88, 166, 255, 0.4);
-  }
-  .tl-sub-hl { list-style: none; margin: 0; padding: 0; }
-  .tl-sub-hl li { margin: 2px 0; color: #a5d6ff; }
-  .tl-sub-ent { margin-top: 4px; display: flex; flex-wrap: wrap; gap: 4px; }
-  .badge-pr { font-family: var(--mono); font-size: 10px; color: #58a6ff; background: rgba(88, 166, 255, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(88, 166, 255, 0.3); }
-  .badge-iss { font-family: var(--mono); font-size: 10px; color: #d29922; background: rgba(210, 153, 34, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(210, 153, 34, 0.3); }
-  .badge-dec { font-family: var(--mono); font-size: 10px; color: #3fb950; background: rgba(63, 185, 80, 0.12); padding: 1px 5px; border-radius: 4px; border: 1px solid rgba(63, 185, 80, 0.3); }
   
   /* 项目深度复盘区块样式 */
   .j-theme-head { display: flex; align-items: center; gap: 8px; margin: 20px 0 6px; }
@@ -1173,26 +1155,14 @@ function renderTimeline(filterKey = 'all') {
 
   tlCount.textContent = `显示 ${filtered.length} / ${tlData.length} 条记录`;
 
-  filtered.forEach(([t, d, ti, k, subHl, entStr]) => {
+  filtered.forEach(([t, d, ti, k]) => {
     const [lab, cls] = labels[k] || ['其他', 'misc', '#8b949e'];
-    let hlHtml = '';
-    if (subHl && subHl.length) {
-      hlHtml = '<ul class="tl-sub-hl">';
-      subHl.forEach(h => { hlHtml += `<li>• ${h}</li>`; });
-      hlHtml += '</ul>';
-    }
-    let entHtml = entStr ? `<div class="tl-sub-ent">${entStr}</div>` : '';
-    let detailsHtml = (hlHtml || entHtml) ? `<div class="tl-details">${hlHtml}${entHtml}</div>` : '';
-
     tlContainer.insertAdjacentHTML('beforeend', `
       <div class="item" data-t="${t}" data-k="${k}">
-        <div class="item-head">
-          <span class="t">${t}</span>
-          <span class="d">${d}</span>
-          <span class="ti">${ti}</span>
-          <span class="topic ${cls}">${lab}</span>
-        </div>
-        ${detailsHtml}
+        <span class="t">${t}</span>
+        <span class="d">${d}</span>
+        <span class="ti">${ti}</span>
+        <span class="topic ${cls}">${lab}</span>
       </div>
     `);
   });

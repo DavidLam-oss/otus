@@ -44,8 +44,39 @@ export class ReportRenderer {
     const [year, month, day] = targetDate.split("-").map(Number);
     const startOfDay = new Date(year, month - 1, day, 0, 0, 0, 0).getTime();
     const endOfDay = new Date(year, month - 1, day + 1, 0, 0, 0, 0).getTime();
+    const TOPIC_NAMES: Record<string, string> = {
+      "antigravity": "Antigravity",
+      "obsidian-wechat-converter": "微信排版插件",
+      "obsidian": "Obsidian",
+      "wechat": "微信生态",
+      "google chrome": "Chrome 检索",
+      "google_chrome": "Chrome 检索",
+      "chrome": "Chrome 检索",
+      "otus": "Otus 研发",
+      "ghostty": "Ghostty 终端",
+      "comet": "Comet 浏览",
+      "magpie": "Magpie 路由",
+      "noterelay": "NoteRelay",
+      "domains": "域名服务",
+      "misc": "其他零碎"
+    };
+
+    const getDisplayName = (key: string, rawName: string): string => {
+      const lower = key.toLowerCase();
+      if (TOPIC_NAMES[lower]) return TOPIC_NAMES[lower];
+      if (/[\u4e00-\u9fa5]/.test(rawName)) return rawName;
+      return rawName.charAt(0).toUpperCase() + rawName.slice(1);
+    };
+
     const allSessions = this.store.listSessions({ since: startOfDay, until: endOfDay, limit: 2000 });
-    const analyzedSessions = allSessions.filter((s) => s.analysisStatus === "analyzed");
+    const analyzedSessions = allSessions.filter((s) => {
+      if (s.analysisStatus !== "analyzed") return false;
+      const app = (s.appNames[0] || "").toLowerCase();
+      if (["loginwindow", "screensaverengine", "lockscreen", "screensaver"].includes(app)) return false;
+      const title = (s.analysisTitle || "").toLowerCase();
+      if (title.startsWith("loginwindow") || title.startsWith("idle /") || title.includes("系统锁屏闲置")) return false;
+      return true;
+    });
 
     // 3. 构建 rawSlots (每条 [hour, minute, durationMinutes])
     const rawSlots: [number, number, number][] = [];
@@ -64,7 +95,8 @@ export class ReportRenderer {
       const key = (sess.project || sess.topics?.[0] || sess.appNames[0] || "misc")
         .toLowerCase()
         .replace(/[^a-z0-9_-]/g, "_");
-      const displayName = sess.project || sess.topics?.[0] || sess.appNames[0] || "其他零碎";
+      const rawName = sess.project || sess.topics?.[0] || sess.appNames[0] || "其他零碎";
+      const displayName = getDisplayName(key, rawName);
 
       const current = themeDurationMap.get(key) || { name: displayName, minutes: 0 };
       current.minutes += dur;
@@ -111,21 +143,20 @@ export class ReportRenderer {
       cssRules.push(`.topic.t-misc { background: rgba(139,148,158,0.15); color: #8b949e; border: 1px solid rgba(139,148,158,0.3); }`);
     }
 
-    // 5. 构建时间线 tlData: [timeStr, durationStr, title, topicKey, highlights, entitySummary]
-    const tlData: any[] = [];
+    // 5. 构建时间线 tlData: [timeStr, durationStr, title, topicKey] (1:1 对标 Alma)
+    const tlData: [string, string, string, string][] = [];
     for (const s of analyzedSessions) {
       const d = new Date(s.startedAt);
       const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
       const durMin = Math.max(1, Math.round((s.durationMs || 0) / 60000));
       const durStr = `${durMin}m`;
-      const fallbackTitle = s.appNames[0] ? `在 ${s.appNames[0]} 中专注操作` : "日常专注折腾";
+      const fallbackTitle = s.appNames[0] ? `在 ${s.appNames[0]} 中操作` : "日常专注折腾";
       const title = s.analysisTitle || fallbackTitle;
       const rawKey = (s.project || s.topics?.[0] || s.appNames[0] || "misc")
         .toLowerCase()
         .replace(/[^a-z0-9_-]/g, "_");
       const topicKey = finalThemesMap.has(rawKey) ? rawKey : "misc";
-      const highlights = (s.highlights || []).slice(0, 3);
-      tlData.push([timeStr, durStr, title, topicKey, highlights, ""]);
+      tlData.push([timeStr, durStr, title, topicKey]);
     }
 
     // 6. 读取 template.html
