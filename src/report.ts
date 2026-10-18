@@ -29,12 +29,15 @@ export class ReportRenderer {
     this.summarizer = new ActivitySummarizer(store, config);
   }
 
-  public async renderHtmlReport(dateKey?: string): Promise<{ html: string; outputPath: string }> {
+  public async renderHtmlReport(
+    dateKey?: string,
+    opts: { force?: boolean } = {}
+  ): Promise<{ html: string; outputPath: string }> {
     const today = getLocalDateKey();
     const targetDate = dateKey || today;
 
     // 1. 生成或获取日终总结数据
-    const reportData = await this.summarizer.generateDailyReport(targetDate);
+    const reportData = await this.summarizer.generateDailyReport(targetDate, { force: opts.force });
     const stats = reportData.stats || {};
 
     // 2. 提取当天所有 session
@@ -71,17 +74,36 @@ export class ReportRenderer {
     // 按时长降序排序
     const sortedThemes = [...themeDurationMap.entries()].sort((a, b) => b[1].minutes - a[1].minutes);
 
+    // 约定最多展示 10 个分类：前 9 个主要分类保留，其余合并为「其他零碎」
+    const TOP_LIMIT = 9;
+    const finalThemesMap = new Map<string, { name: string; minutes: number }>();
+    let miscMinutes = 0;
+
+    sortedThemes.forEach(([key, val], idx) => {
+      if (idx < TOP_LIMIT && key !== "misc") {
+        finalThemesMap.set(key, val);
+      } else {
+        miscMinutes += val.minutes;
+      }
+    });
+
+    if (miscMinutes > 0 || finalThemesMap.size === 0) {
+      finalThemesMap.set("misc", { name: "其他零碎", minutes: miscMinutes });
+    }
+
     const themes: [string, number, string, string][] = [];
     const labels: Record<string, [string, string, string]> = {};
     const cssRules: string[] = [];
 
-    sortedThemes.forEach(([key, val], idx) => {
-      const color = PALETTE[idx % PALETTE.length];
+    let colorIdx = 0;
+    for (const [key, val] of finalThemesMap.entries()) {
+      const color = key === "misc" ? "#8b949e" : PALETTE[colorIdx % PALETTE.length];
+      if (key !== "misc") colorIdx++;
       const cssClass = `t-${key}`;
       themes.push([val.name, val.minutes, color, key]);
       labels[key] = [val.name, cssClass, color];
       cssRules.push(`.topic.${cssClass} { background: ${color}22; color: ${color}; border: 1px solid ${color}44; }`);
-    });
+    }
 
     // 默认兜底 label
     if (!labels["misc"]) {
@@ -96,10 +118,12 @@ export class ReportRenderer {
       const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
       const durMin = Math.max(1, Math.round((s.durationMs || 0) / 60000));
       const durStr = `${durMin}m`;
-      const title = s.analysisTitle || (s.appNames[0] ? `Work in ${s.appNames[0]}` : "日常专注折腾");
-      const topicKey = (s.project || s.topics?.[0] || s.appNames[0] || "misc")
+      const fallbackTitle = s.appNames[0] ? `在 ${s.appNames[0]} 中专注操作` : "日常专注折腾";
+      const title = s.analysisTitle || fallbackTitle;
+      const rawKey = (s.project || s.topics?.[0] || s.appNames[0] || "misc")
         .toLowerCase()
         .replace(/[^a-z0-9_-]/g, "_");
+      const topicKey = finalThemesMap.has(rawKey) ? rawKey : "misc";
       const highlights = (s.highlights || []).slice(0, 3);
       tlData.push([timeStr, durStr, title, topicKey, highlights, ""]);
     }
@@ -184,22 +208,33 @@ export class ReportRenderer {
     `;
     html = html.replace(/<!--__OTUS_THEMATIC_DEEP_DIVE__-->/g, deepDiveHtml);
 
-    // 工作流复盘与洞察
-    const topAppStr = stats.topApps?.slice(0, 3).map((a: any) => `${a.app} (${a.minutes}m)`).join("、") || "桌面探索";
-    const insightsHtml = `
-      <div class="ins" style="border-top-color: var(--accent);">
-        <h4>主攻方向聚焦</h4>
-        <p style="margin-top: 8px; font-size: 13px; color: var(--muted); line-height: 1.6;">
-          全天主要投入于 <strong>${topAppStr}</strong>。有效折腾会话 ${stats.analyzedCount || 0} 个，聚类出 ${stats.clusterCount || 0} 个清晰的推进主题。
-        </p>
-      </div>
-      <div class="ins" style="border-top-color: var(--good);">
-        <h4>时间利用与心流连续度</h4>
-        <p style="margin-top: 8px; font-size: 13px; color: var(--muted); line-height: 1.6;">
-          累计活跃专注时长 <strong>${stats.totalActiveMinutes || 0} 分钟</strong>。已自动过滤 ${stats.filteredCount || 0} 个碎片无输入或锁屏闲置会话，折腾信噪比达到 ${efficiencyPct}%。
-        </p>
-      </div>
-    `;
+    // 工作流复盘与洞察（对标 Alma 风格的高价值卡片）
+    let insightsHtml = "";
+    if (reportData.insights && reportData.insights.length > 0) {
+      insightsHtml = reportData.insights
+        .map((ins) => {
+          const typeCls = ins.type === "good" ? "ins good" : ins.type === "ai" ? "ins ai" : "ins";
+          return `
+            <div class="${typeCls}">
+              <div class="h"><span class="tag">${this.escapeHtml(ins.tag)}</span> ${this.escapeHtml(ins.title)}</div>
+              <div class="b">${this.formatInline(ins.content)}</div>
+            </div>
+          `;
+        })
+        .join("\n");
+    } else {
+      const topAppStr = stats.topApps?.slice(0, 3).map((a: any) => `${a.app} (${a.minutes}m)`).join("、") || "桌面探索";
+      insightsHtml = `
+        <div class="ins good">
+          <div class="h"><span class="tag">主攻聚焦</span> 全天深度深耕 ${this.escapeHtml(topAppStr)}</div>
+          <div class="b">全天有效折腾会话 <strong>${stats.analyzedCount || 0} 个</strong>，聚类出 ${stats.clusterCount || 0} 个清晰的推进主题。</div>
+        </div>
+        <div class="ins">
+          <div class="h"><span class="tag">心流节奏</span> 累计活跃专注 ${stats.totalActiveMinutes || 0} 分钟</div>
+          <div class="b">已自动过滤 ${stats.filteredCount || 0} 个碎片无输入或锁屏闲置会话，折腾信噪比达到 <strong>${efficiencyPct}%</strong>。</div>
+        </div>
+      `;
+    }
     html = html.replace(/<!--__OTUS_INSIGHTS_GRID__-->/g, insightsHtml);
 
     // 8. 写入并保存报告

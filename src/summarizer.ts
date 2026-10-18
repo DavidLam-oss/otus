@@ -3,17 +3,39 @@ import type { ActivitySession } from "./store.ts";
 import { defaultConfig, getLocalDateKey } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 
-const OTUS_NARRATIVE_SYSTEM_PROMPT = `You are writing a first-person personal tinkering & dev journal (个人折腾日记) for the user, based on a structured activity skeleton they give you. Note: this is on the user's personal computer for personal exploration, coding, learning and tinkering (NOT a corporate employee work report).
+const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人折腾日记执笔人。你将根据用户电脑上的真实活动骨架数据，撰写一篇真实、有洞察、略带极客自嘲风格的第一人称「个人折腾日记」。
 
-Hard rules:
-- Write in the same language the skeleton is in (日本語 / 中文 / English). Mirror the user's voice — terse, concrete, a little wry, personal dev log style. Do not add greetings or meta commentary.
-- NEVER invent facts. Every PR number, person handle, version, identifier, URL, and decision in your output must come verbatim from the skeleton. If something isn't in the skeleton, do not add it.
-- Keep the markdown structure: one top-level "# " heading (e.g. "# YYYY-MM-DD 周X 个人折腾日记"), one "## " per theme, bullets for artifacts. But feel free to tighten wording, merge redundant bullets, and add 1-2 sentences of connective prose under each heading.
-- Preserve every markdown link and code-span the skeleton provides — do not rewrite [label](url) as plain text.
-- Prefer "shipped / decided / built / explored / fixed / tuned" over "looked at / browsed / opened". If the skeleton only has vague activity with no PR/decision/version, keep it a single short line — don't pad.
-- Drop the "时间线" / "Timeline" bullets in your output unless they add information the theme-level summary loses. The journal is about what got done, not what minute it happened.
-- Order themes by importance (features/bugs/decisions first, detours last). Keep "其他零碎" / "Misc" at the end.
-- Total length budget: ~500-900 words for a normal day. Don't pad.`;
+硬性规则（Hard rules）：
+1. 语言要求（极其严格）：必须始终使用自然、凝练的简体中文撰写！严禁出现整段英文。
+2. 视角与语调：
+   - 采用第一人称视角（「我」或省略主语），语调像一名高段位独立开发者或极客在自己的独立博客记录当日手记。
+   - 拒绝假大空的汇报官话，拒绝问候语或总结套话。
+   - 偏好有力的动词：「搞定 / 连发三版 / 踩坑 / 闭环 / 优化 / 重构 / 砍掉」，少用「查看了 / 浏览了 / 打开了」。
+3. 严格的事实边界：
+   - 严禁编造任何未在骨架中出现的事实、PR 编号、版本号或项目名。所有 PR、版本号、Commit、人名必须原样保留。
+4. 结构规范：
+   - 保持一个一级标题（# YYYY-MM-DD 周X 个人折腾日记），每个核心主题一个二级标题（## 主题名）。
+   - 保留骨架中的重点链接与行内代码块。
+`;
+
+const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与效能分析专家。根据用户全天的活动骨架与统计数据，以犀利、具体、直击要害的口吻生成 4-6 条高质量的「工作流深度复盘与洞察」卡片。
+
+请输出一个合法的 JSON 数组，每个卡片结构如下：
+[
+  {
+    "type": "good" | "warn" | "ai",
+    "tag": string,
+    "title": string,
+    "content": string
+  }
+]
+
+说明：
+- type: "good" (高光闭环、显著产出), "warn" (精力预警、过度调试、该改的), "ai" (多Agent编排、提示词优化、工程护栏沉淀)
+- tag: 2-6字简短标签（如："高光闭环"、"精力预警"、"调试策略"、"AI工具习惯"、"工程护栏"、"产品化思维"）
+- title: 简明有力（<= 25 字）
+- content: 2-3 句具体剖析（<= 160 字），可使用 **粗体** 或 \`代码\` 标记关键点
+`;
 
 export interface ThemeCluster {
   key: string;
@@ -42,6 +64,7 @@ export class ActivitySummarizer {
     skeleton: string;
     isPartial: boolean;
     stats: Record<string, any>;
+    insights: Array<{ type: string; tag: string; title: string; content: string }>;
     generatedAt: number;
   }> {
     const today = getLocalDateKey();
@@ -59,6 +82,7 @@ export class ActivitySummarizer {
             skeleton: existing.stats.skeleton || existing.stats.report,
             isPartial: existing.isPartial,
             stats: existing.stats.reportStats || {},
+            insights: existing.stats.insights || [],
             generatedAt: existing.stats.reportGeneratedAt || existing.updatedAt
           };
         }
@@ -136,7 +160,7 @@ export class ActivitySummarizer {
         kind: "daily",
         dateKey: targetDate,
         summary: emptyMd,
-        stats: { report: emptyMd, skeleton: emptyMd, reportGeneratedAt: Date.now(), reportStats },
+        stats: { report: emptyMd, skeleton: emptyMd, insights: [], reportGeneratedAt: Date.now(), reportStats },
         isPartial: isToday
       });
       return {
@@ -145,6 +169,7 @@ export class ActivitySummarizer {
         skeleton: emptyMd,
         isPartial: isToday,
         stats: reportStats,
+        insights: [],
         generatedAt: Date.now()
       };
     }
@@ -152,12 +177,15 @@ export class ActivitySummarizer {
     // 5. 拼装结构化 Markdown 骨架
     const skeleton = this.buildSkeleton(clusters, targetDate, reportStats);
 
+    // 6. 生成复盘与洞察卡片 (LLM 深度反思 + 启发式兜底)
+    const insights = await this.generateReviewInsights(skeleton, reportStats);
+
     if (opts.skeletonOnly || !this.config.llmApiKey) {
       this.store.upsertSummary({
         kind: "daily",
         dateKey: targetDate,
         summary: skeleton.split("\n").find((l) => l.trim() && !l.startsWith("#")) || null,
-        stats: { report: skeleton, skeleton, reportGeneratedAt: Date.now(), reportStats },
+        stats: { report: skeleton, skeleton, insights, reportGeneratedAt: Date.now(), reportStats },
         isPartial: isToday
       });
       return {
@@ -166,11 +194,12 @@ export class ActivitySummarizer {
         skeleton,
         isPartial: isToday,
         stats: reportStats,
+        insights,
         generatedAt: Date.now()
       };
     }
 
-    // 6. 调用 Narrative Pass 进行第一人称润色
+    // 7. 调用 Narrative Pass 进行第一人称润色
     let finalMarkdown = skeleton;
     let modelUsed: string | null = null;
     try {
@@ -192,7 +221,7 @@ export class ActivitySummarizer {
       kind: "daily",
       dateKey: targetDate,
       summary: firstSummarySentence,
-      stats: { report: finalMarkdown, skeleton, reportGeneratedAt: Date.now(), reportStats },
+      stats: { report: finalMarkdown, skeleton, insights, reportGeneratedAt: Date.now(), reportStats },
       model: modelUsed,
       isPartial: isToday
     });
@@ -203,6 +232,7 @@ export class ActivitySummarizer {
       skeleton,
       isPartial: isToday,
       stats: reportStats,
+      insights,
       generatedAt: Date.now()
     };
   }
@@ -522,5 +552,96 @@ export class ActivitySummarizer {
       }
     }
     throw lastError;
+  }
+
+  public async generateReviewInsights(
+    skeleton: string,
+    stats: any
+  ): Promise<Array<{ type: string; tag: string; title: string; content: string }>> {
+    const url = `${this.config.llmApiBase.replace(/\/+$/, "")}/chat/completions`;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (this.config.llmApiKey) headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 45000);
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: this.config.reportModel,
+            messages: [
+              { role: "system", content: OTUS_INSIGHTS_SYSTEM_PROMPT },
+              {
+                role: "user",
+                content: `今日全天数据：活跃时长 ${stats.totalActiveMinutes} 分钟，会话数 ${stats.sessionCount}，有效分析 ${stats.analyzedCount}，主用应用：${JSON.stringify(stats.topApps)}。\n\n活动骨架：\n${skeleton.slice(0, 3000)}`
+              }
+            ],
+            temperature: 0.2
+          })
+        });
+
+        if (res.ok) {
+          const data = (await res.json()) as any;
+          const text = data.choices?.[0]?.message?.content || "";
+          const match = text.match(/\[[\s\S]*\]/) || text.match(/\{[\s\S]*\}/);
+          if (match) {
+            const parsed = JSON.parse(match[0]);
+            const list = Array.isArray(parsed) ? parsed : parsed.insights || parsed.cards || [];
+            if (Array.isArray(list) && list.length > 0) {
+              return list.map((item: any) => ({
+                type: ["good", "warn", "ai"].includes(item.type) ? item.type : "good",
+                tag: String(item.tag || "复盘洞察"),
+                title: String(item.title || "今日工作流"),
+                content: String(item.content || "")
+              }));
+            }
+          }
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+    } catch (err) {
+      console.warn("[ActivitySummarizer] LLM insights generation failed, using heuristic fallback:", err);
+    }
+
+    // 启发式高质量洞察兜底（对齐 Alma 风格）
+    const fallback: Array<{ type: string; tag: string; title: string; content: string }> = [];
+    const topApp = stats.topApps?.[0]?.app || "代码编辑器";
+    const topAppMins = stats.topApps?.[0]?.minutes || 0;
+
+    fallback.push({
+      type: "good",
+      tag: "主攻聚焦",
+      title: `全天重度深耕 ${topApp}`,
+      content: `今日在 **${topApp}** 累计投入超 ${topAppMins} 分钟，完成了 ${stats.analyzedCount || 0} 个有效推进会话，形成了明确的开发闭环。`
+    });
+
+    if (stats.totalActiveMinutes >= 480) {
+      fallback.push({
+        type: "warn",
+        tag: "精力预警",
+        title: `连轴运转超 ${Math.round(stats.totalActiveMinutes / 60)} 小时`,
+        content: `全天累计活跃专注时长达 **${stats.totalActiveMinutes} 分钟**，持续高强度注意力容易导致晚间认知负荷过载，建议设定强制屏幕休息窗口。`
+      });
+    } else {
+      fallback.push({
+        type: "good",
+        tag: "心流节奏",
+        title: "专注节奏紧凑高效",
+        content: `有效折腾会话 ${stats.analyzedCount} 个，系统已自动剔除 ${stats.filteredCount || 0} 个无操作闲置切片，折腾信噪比保持高位。`
+      });
+    }
+
+    fallback.push({
+      type: "ai",
+      tag: "工程护栏",
+      title: "踩坑即固化，打造自动化护栏",
+      content: `在开发与调试流程中，保持将高频试错与边界条件固化为脚本、类型规范与规则文档，这是复利最高的技术资产。`
+    });
+
+    return fallback;
   }
 }

@@ -77,6 +77,7 @@ export const defaultConfig: OtusConfig = {
   // 默认直接对齐本地 Magpie 网关，亦可通过环境变量覆盖
   llmApiBase: process.env.OTUS_LLM_URL || "http://127.0.0.1:3425/v1",
   llmApiKey: process.env.OTUS_LLM_KEY || "magpie-local",
-  analysisModel: process.env.OTUS_ANALYSIS_MODEL || "workbuddy-ai/deepseek-v4.1-flash-sg",
-  reportModel: process.env.OTUS_REPORT_MODEL || "workbuddy-ai/deepseek-v4.1-flash-sg"
+  analysisModel: process.env.OTUS_ANALYSIS_MODEL || "group/fast-scan",
+  reportModel: process.env.OTUS_REPORT_MODEL || "group/smart-router"
 };
+

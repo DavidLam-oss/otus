@@ -270,8 +270,9 @@ async function main() {
 
     case "export": {
       const dateKey = resolveDateKey(args[1] && !args[1].startsWith("--") ? args[1] : undefined);
+      const force = args.includes("--force");
       const renderer = new ReportRenderer(store, defaultConfig);
-      const { outputPath } = await renderer.renderHtmlReport(dateKey);
+      const { outputPath } = await renderer.renderHtmlReport(dateKey, { force });
       console.log(`[Otus] HTML Report generated: ${outputPath}`);
       try {
         execSync(`open "${outputPath}"`);

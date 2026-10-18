@@ -4,16 +4,29 @@ import { defaultConfig } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 import { redactSensitiveText } from "./redactor.ts";
 
-const OTUS_ANALYZER_SYSTEM_PROMPT = `You are an activity analyzer for a desktop assistant. You analyze a work session from a person's computer (OCR text, apps used, browser visits, window titles) and produce a structured JSON summary.
+const OTUS_ANALYZER_SYSTEM_PROMPT = `你是一个桌面个人活动记录器的微会话深度分析器。你负责分析用户在电脑上的一个工作会话（OCR 识别文本、使用的 App、浏览器访问记录、窗口标题等），并输出结构化的 JSON 总结。
 
-Produce a JSON object with this shape:
+严格规则（Hard rules）：
+1. 语言要求（极其重要）：
+   - title、description、highlights 必须始终使用简体中文输出！即使 OCR 主要是英文代码或文档，也必须用精炼有力的中文短语进行总结。
+   - 专有名词（如项目名、PR 编号、函数名、API、Git 分支、英文产品名等）保留原样，不要生硬汉化（如 "Obsidian", "PR #82", "ESLint", "Tailwind"）。
+2. title 格式规范：
+   - 必须是一句精炼具体的中文短语（不超过 30 个字），直击核心行动与产出。
+   - 优秀示例：「Obsidian 插件发布 v2.11.0」、「调试微信文章列表缩进偏移」、「配置 Magpie 模型智能路由」、「重构 SQLite 数据存储层」。
+   - 反面示例（严禁出现）：「在 Chrome 中浏览网页」、「处理项目」、「Coding in VS Code」、「测试」。
+3. worth 过滤标准：
+   - 如果该会话仅为系统锁屏（loginwindow / ScreenSaver / LockScreen）、无输入闲置挂机、随机刷网页摸鱼、或者 OCR 毫无实质操作内容，"worth" 必须设为 false。
+4. 事实准则：
+   - 绝对严禁编造任何事实。提到的 PR 号、Issue、Commit、版本号、人名必须在 OCR 或事件中原样出现。
+
+输出的 JSON 格式规范：
 {
-  "worth": boolean,                    // true if this session contains real work, focus, communication, or learning
-  "title": string,                     // ONE clear phrase (<= 80 chars) describing the primary activity. Concrete, specific. e.g. "Review WeChat article structure spec"
-  "description": string,               // 1-2 concise sentences (<= 240 chars) summarizing what actually happened and any key outcome
-  "project": string | null,            // inferred project/repo slug if clearly identifiable (e.g. "obsidian-wechat-converter", "otus"), or null
-  "topics": string[],                  // 2-5 specific lowercase tags (e.g. ["wechat", "markdown", "theme"])
-  "highlights": string[],              // 1-4 bullet points of concrete actions/outcomes (<= 120 chars each)
+  "worth": boolean,                    // 若为实质折腾/编码/深度阅读/沟通学习则为 true，无意义闲置或纯锁屏为 false
+  "title": string,                     // 极简中文短语 (<= 30 字)，直击核心折腾内容
+  "description": string,               // 1-2 句紧凑中文 (<= 120 字)，概括实际操作与关键产出
+  "project": string | null,            // 推断的项目名称 slug（如 "obsidian-wechat-converter", "otus"），无法确认填 null
+  "topics": string[],                  // 2-4 个精炼主题标签（如 ["发布", "eslint", "样式调试"]）
+  "highlights": string[],              // 1-3 条具体行动/产出的中文要点 (<= 60 字/条)
   "entities": {
     "prs": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
     "issues": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
@@ -26,26 +39,10 @@ Produce a JSON object with this shape:
     "decisions": string[],
     "urls": string[]
   },
-  "memoryCandidates": [
-    {
-      "type": "project" | "feedback" | "reference" | "user",
-      "content": string,
-      "why": string
-    }
-  ],
-  "worthKnowledge": boolean,           // reusable knowledge (docs, APIs, code techniques)
-  "isMeeting": boolean                 // true if this session was a sync meeting (Zoom/Meet/Teams/Feishu call)
+  "memoryCandidates": [],
+  "worthKnowledge": boolean,           // 是否包含可复用知识（技术方案、文档、踩坑经验）
+  "isMeeting": boolean                 // 是否为音视频会议/通话
 }
-
-Rules:
-- "worth" must be false for idle scrolling, random browsing, system idle, transient app switches, or empty OCR.
-- Be specific. Prefer "Merged PR #282 (activity-recorder service) into main" over "Worked on project".
-- Every entity you list MUST appear verbatim in the OCR/events/visits. Never invent a PR number, person, version, or URL.
-- Identifiers: only things a technical reader would recognize as named code/config. Skip common English words.
-- If you can't attribute a project, set "project" to null. Do not guess.
-- Return arrays even when empty — never omit keys in "entities".
-- memoryCandidates: emit [] for normal sessions unless it's a durable fact/preference that survives 6+ months.
-- When in doubt, emit [].
 `;
 
 export class ActivityAnalyzer {
@@ -199,7 +196,7 @@ export class ActivityAnalyzer {
 
       this.store.setSessionAnalysis(session.id, {
         status: "analyzed",
-        title: parsed.title || "Focus Work",
+        title: parsed.title || "日常专注折腾",
         description: parsed.description || null,
         model: this.config.analysisModel,
         worthMemory: Array.isArray(parsed.memoryCandidates) && parsed.memoryCandidates.length > 0,
@@ -239,8 +236,8 @@ export class ActivityAnalyzer {
     if (isIdle) {
       this.store.setSessionAnalysis(session.id, {
         status: "not_worth",
-        title: `Idle / ${topApp}`,
-        description: `Inactive session with 0 input events. Filtered via offline heuristic (${reason.slice(0, 100)}).`,
+        title: `系统闲置 (${topApp})`,
+        description: `无输入事件与屏幕有效操作，离线启发式判定为闲置 (${reason.slice(0, 100)})。`,
         model: "offline-heuristic",
         worthMemory: false,
         worthKnowledge: false,
@@ -260,14 +257,16 @@ export class ActivityAnalyzer {
       if (match && match[1]) inferredProject = match[1];
     }
 
-    const inferredTitle = sampleOcr
-      ? `${topApp}: ${sampleOcr.slice(0, 60)}`
-      : `Work in ${session.appNames.slice(0, 2).join(", ") || topApp}`;
+    let inferredTitle = `在 ${topApp} 中专注操作`;
+    if (sampleOcr) {
+      const cleanSnippet = sampleOcr.replace(/[^\u4e00-\u9fa5a-zA-Z0-9_ -]/g, " ").replace(/\s+/g, " ").trim();
+      inferredTitle = cleanSnippet.length > 0 ? `${topApp}: ${cleanSnippet.slice(0, 32)}` : inferredTitle;
+    }
 
     this.store.setSessionAnalysis(session.id, {
       status: "analyzed",
       title: inferredTitle,
-      description: `Active session in ${session.appNames.join(", ") || topApp} with ${ocrSnippets.length} OCR frames captured (fallback: ${reason.slice(0, 100)}).`,
+      description: `在 ${session.appNames.join("、") || topApp} 中持续操作，捕获 ${ocrSnippets.length} 个屏幕帧（离线启发式兜底）。`,
       model: "offline-heuristic",
       worthMemory: false,
       worthKnowledge: false,
@@ -275,7 +274,7 @@ export class ActivityAnalyzer {
       entities: {},
       topics: session.appNames.map((a) => a.toLowerCase()),
       project: inferredProject,
-      highlights: ocrSnippets.slice(0, 3)
+      highlights: ocrSnippets.slice(0, 3).map((s) => s.slice(0, 60))
     });
     return "analyzed";
   }

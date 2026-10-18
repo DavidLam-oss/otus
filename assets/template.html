@@ -429,8 +429,23 @@
     display: grid;
     grid-template-columns: 330px 1fr;
     gap: 16px;
-    align-items: start;
+    align-items: stretch;
   }
+
+  .grid-card {
+    height: 520px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .bars-scroll {
+    flex: 1;
+    overflow-y: auto;
+    padding-right: 6px;
+  }
+  .bars-scroll::-webkit-scrollbar { width: 5px; }
+  .bars-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 
   .bar-item {
     padding: 9px 10px;
@@ -470,6 +485,7 @@
     padding-bottom: 12px;
     margin-bottom: 12px;
     border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
   }
   .filter-pills { display: flex; flex-wrap: wrap; gap: 6px; }
   .pill {
@@ -499,11 +515,12 @@
   .tl {
     position: relative;
     padding-left: 22px;
-    max-height: 480px;
+    flex: 1;
     overflow-y: auto;
     padding-right: 6px;
+    height: 100%;
   }
-  .tl::-webkit-scrollbar { width: 6px; }
+  .tl::-webkit-scrollbar { width: 5px; }
   .tl::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
   .tl::before {
     content: '';
@@ -740,16 +757,16 @@
   </div>
   <div class="grid-2col">
     <!-- 左侧：主题投入 -->
-    <div class="card">
-      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;display:flex;justify-content:space-between;">
-        <span>按主题聚合时长（点击过滤）</span>
-        <span style="font-family:var(--mono)">总计 605m</span>
+    <div class="card grid-card">
+      <div style="font-size:12px;color:var(--muted);margin-bottom:12px;display:flex;justify-content:space-between;flex-shrink:0;">
+        <span>按主题聚合时长（Top 10 分类）</span>
+        <span style="font-family:var(--mono)" id="barsTotal"></span>
       </div>
-      <div id="bars"></div>
+      <div id="bars" class="bars-scroll"></div>
     </div>
 
     <!-- 右侧：时间线 -->
-    <div class="card">
+    <div class="card grid-card">
       <div class="tl-toolbar">
         <div class="filter-pills" id="filterPills"></div>
         <div class="tl-count" id="tlCount"></div>
@@ -912,34 +929,72 @@ for (let col = 0; col < HOURS; col++) {
 }
 hmMatrix.innerHTML = mHtml;
 
-// ---- 4. 渲染右侧「心流雷达（上午/下午/晚间动态聚合）」 ----
-const phases = [
-  { name: '上午攻坚', range: '07:00–12:00', startH: 7, endH: 12, color: 'var(--good)' },
-  { name: '下午推进', range: '12:00–18:00', startH: 12, endH: 18, color: 'var(--accent)' },
-  { name: '晚间创作', range: '18:00–22:00', startH: 18, endH: 22, color: 'var(--pink)' }
-];
+// ---- 4. 渲染右侧「心流雷达（根据全天实际 Activity 动态聚合专注节律）」 ----
 const phaseList = document.getElementById('phaseList');
-phases.forEach(p => {
-  let activeMins = 0;
-  const totalSpanMins = (p.endH - p.startH) * 60;
-  for (let h = p.startH; h < p.endH; h++) {
-    const col = h - START;
-    for (let r = 0; r < SPH; r++) activeMins += grid[col * SPH + r];
+const activeBlocks = [];
+let blockStart = -1;
+let blockLastActive = -1;
+let blockActiveMins = 0;
+
+for (let i = 0; i < nSlots; i++) {
+  if (grid[i] > 0) {
+    if (blockStart === -1) {
+      blockStart = i;
+      blockActiveMins = grid[i];
+    } else {
+      // 若距上一个活跃格间隔 <= 40 分钟 (8 个格)，继续视为同一时段
+      if (i - blockLastActive <= 8) {
+        blockActiveMins += grid[i];
+      } else {
+        // 间隔超 40 分钟，闭合前一时段
+        if (blockActiveMins >= 15) {
+          activeBlocks.push({ start: blockStart, end: blockLastActive, activeMins: Math.round(blockActiveMins) });
+        }
+        blockStart = i;
+        blockActiveMins = grid[i];
+      }
+    }
+    blockLastActive = i;
   }
-  activeMins = Math.round(activeMins);
-  const ratio = Math.min(100, Math.round((activeMins / totalSpanMins) * 100));
-  phaseList.insertAdjacentHTML('beforeend', `
-    <div class="phase-item">
-      <div class="phase-top">
-        <span><span class="phase-name">${p.name}</span><span class="phase-time">${p.range}</span></span>
-        <span class="phase-val">${activeMins}m 活跃 (${ratio}%)</span>
+}
+if (blockStart !== -1 && blockActiveMins >= 15) {
+  activeBlocks.push({ start: blockStart, end: blockLastActive, activeMins: Math.round(blockActiveMins) });
+}
+
+if (activeBlocks.length === 0) {
+  phaseList.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:12px 0;">今日暂无超过 15 分钟的连续心流时段</div>`;
+} else {
+  // 取前 4 个主要专注块
+  activeBlocks.slice(0, 4).forEach((b) => {
+    const [tStart] = slotToTimeRange(b.start);
+    const [, tEnd] = slotToTimeRange(b.end);
+    const spanMins = Math.max(15, (b.end - b.start + 1) * 5);
+    const ratio = Math.min(100, Math.round((b.activeMins / spanMins) * 100));
+    const startH = START + Math.floor(b.start / SPH);
+
+    let name = '专注攻坚';
+    if (startH < 12) name = '晨间攻坚';
+    else if (startH < 14) name = '午间推进';
+    else if (startH < 18) name = '午后深潜';
+    else if (startH < 21) name = '晚间创作';
+    else name = '深夜冲刺';
+
+    const color = ratio >= 75 ? 'var(--good)' : ratio >= 50 ? 'var(--accent)' : 'var(--warn)';
+
+    phaseList.insertAdjacentHTML('beforeend', `
+      <div class="phase-item">
+        <div class="phase-top">
+          <span><span class="phase-name">${name}</span><span class="phase-time">${tStart}–${tEnd}</span></span>
+          <span class="phase-val">${b.activeMins}m 活跃 (${ratio}%)</span>
+        </div>
+        <div class="phase-bar">
+          <div class="phase-fill" style="width:${ratio}%;background:${color}"></div>
+        </div>
       </div>
-      <div class="phase-bar">
-        <div class="phase-fill" style="width:${ratio}%;background:${p.color}"></div>
-      </div>
-    </div>
-  `);
-});
+    `);
+  });
+}
+
 
 // ---- 5. 热力图色彩引擎（支持 GitHub 绿 / 主题光谱 / 单主题过滤染色） ----
 let currentColorMode = 'green'; // 'green' | 'topic'
@@ -1079,6 +1134,8 @@ hmMatrix.addEventListener('click', e => {
 const themes = /*__OTUS_THEMES__*/ [];
 const totalMin = themes.reduce((s, t) => s + t[1], 0);
 const barsContainer = document.getElementById('bars');
+const barsTotalEl = document.getElementById('barsTotal');
+if (barsTotalEl) barsTotalEl.textContent = `总计 ${totalMin}m`;
 
 themes.forEach(([name, min, color, key]) => {
   const pct = totalMin > 0 ? Math.round((min / totalMin) * 100) : 0;
