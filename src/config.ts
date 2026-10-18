@@ -45,6 +45,12 @@ export interface OtusConfig {
   llmApiKey: string;
   analysisModel: string;
   reportModel: string;
+
+  // 独立平台接口配置 (可选，未设置时继承全局 llmApiBase / llmApiKey)
+  analysisApiBase?: string;
+  analysisApiKey?: string;
+  reportApiBase?: string;
+  reportApiKey?: string;
 }
 
 export const baseConfig: OtusConfig = {
@@ -113,6 +119,10 @@ export function getEffectiveConfig(): OtusConfig {
     llmApiKey: process.env.OTUS_LLM_KEY || user.llmApiKey || baseConfig.llmApiKey,
     analysisModel: process.env.OTUS_ANALYSIS_MODEL || user.analysisModel || baseConfig.analysisModel,
     reportModel: process.env.OTUS_REPORT_MODEL || user.reportModel || baseConfig.reportModel,
+    analysisApiBase: process.env.OTUS_ANALYSIS_URL || user.analysisApiBase || undefined,
+    analysisApiKey: process.env.OTUS_ANALYSIS_KEY || user.analysisApiKey || undefined,
+    reportApiBase: process.env.OTUS_REPORT_URL || user.reportApiBase || undefined,
+    reportApiKey: process.env.OTUS_REPORT_KEY || user.reportApiKey || undefined,
   };
 }
 

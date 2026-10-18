@@ -198,11 +198,19 @@ class SettingsWindowController: NSWindowController {
     var keyField: NSSecureTextField!
     var analysisField: NSTextField!
     var reportField: NSTextField!
+
+    // 独立复盘模型配置
+    var customReportCheck: NSButton!
+    var reportUrlLabel: NSTextField!
+    var reportUrlField: NSTextField!
+    var reportKeyLabel: NSTextField!
+    var reportKeyField: NSSecureTextField!
+
     var statusLabel: NSTextField!
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
+            contentRect: NSRect(x: 0, y: 0, width: 500, height: 410),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -217,15 +225,15 @@ class SettingsWindowController: NSWindowController {
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
 
-        var y: CGFloat = 370
-        let labelWidth: CGFloat = 120
-        let fieldWidth: CGFloat = 340
+        var y: CGFloat = 360
+        let labelWidth: CGFloat = 105
+        let fieldWidth: CGFloat = 335
+        let fieldX: CGFloat = 135
 
-        // 预设提供商下拉选择
-        let pLabel = createLabel("服务提供商:", y: y, width: labelWidth)
-        contentView.addSubview(pLabel)
+        // 1. 预设提供商下拉选择
+        contentView.addSubview(createLabel("服务提供商:", y: y, width: labelWidth))
 
-        providerPopUp = NSPopUpButton(frame: NSRect(x: 140, y: y - 4, width: fieldWidth, height: 26))
+        providerPopUp = NSPopUpButton(frame: NSRect(x: fieldX, y: y - 4, width: fieldWidth, height: 26))
         providerPopUp.addItems(withTitles: [
             "Magpie 本地网关 (默认推荐)",
             "DeepSeek 官方 API (高性价比推荐)",
@@ -237,57 +245,65 @@ class SettingsWindowController: NSWindowController {
         providerPopUp.action = #selector(providerChanged)
         contentView.addSubview(providerPopUp)
 
-        // API Base URL
-        y -= 45
+        // 2. 主 API Base URL
+        y -= 40
         contentView.addSubview(createLabel("API 接口地址:", y: y, width: labelWidth))
-        urlField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        urlField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(urlField)
 
-        // API Key
-        y -= 40
+        // 3. 主 API Key
+        y -= 38
         contentView.addSubview(createLabel("API 密钥 (Key):", y: y, width: labelWidth))
-        keyField = NSSecureTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        keyField = NSSecureTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         contentView.addSubview(keyField)
 
-        // Analysis Model
-        y -= 40
-        let aTip = "【白天高频微会话分析】推荐使用低延迟、低成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan），每次分析仅耗时数十至数百毫秒。"
-        let aLabel = createLabel("会话分析模型:", y: y, width: labelWidth, toolTip: aTip)
-        contentView.addSubview(aLabel)
-        analysisField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        // 4. 会话分析模型 + ⓘ 信息图标
+        y -= 38
+        contentView.addSubview(createLabel("会话分析模型:", y: y, width: labelWidth))
+        let aTip = "【白天高频微会话分析】\n每当切屏或累积活动时自动在后台触发，负责切分会话并提取项目和标签。\n推荐使用毫秒级响应的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan）。"
+        let aInfoBtn = createInfoButton(x: labelWidth + 12, y: y + 2, tip: aTip, action: #selector(showAnalysisInfo))
+        contentView.addSubview(aInfoBtn)
+
+        analysisField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         analysisField.placeholderString = "例如：group/fast-scan 或 deepseek-chat"
         analysisField.toolTip = aTip
         contentView.addSubview(analysisField)
 
-        // Analysis Model Hint
-        y -= 19
-        let aHint = createHintLabel("⏱️ 负责白天微会话分析，建议低延迟轻量模型 (如 deepseek-chat, gpt-4o-mini)", y: y, width: fieldWidth)
-        contentView.addSubview(aHint)
-
-        // Report Model
+        // 5. 深度复盘模型 + ⓘ 信息图标
         y -= 38
-        let rTip = "【晚间全天日记深度复盘】推荐使用具备复杂长上下文推理与代码理解能力的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router），提炼全天技术攻坚与代码决策。"
-        let rLabel = createLabel("深度复盘模型:", y: y, width: labelWidth, toolTip: rTip)
-        contentView.addSubview(rLabel)
-        reportField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(createLabel("深度复盘模型:", y: y, width: labelWidth))
+        let rTip = "【晚间全天深度复盘】\n每天仅生成日终报告时触发一次，需长上下文梳理全天代码决策与攻坚历程。\n推荐使用推理旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router）。"
+        let rInfoBtn = createInfoButton(x: labelWidth + 12, y: y + 2, tip: rTip, action: #selector(showReportInfo))
+        contentView.addSubview(rInfoBtn)
+
+        reportField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
         reportField.placeholderString = "例如：group/smart-router 或 gpt-4o"
         reportField.toolTip = rTip
         contentView.addSubview(reportField)
 
-        // Report Model Hint
-        y -= 19
-        let rHint = createHintLabel("🧠 负责晚间技术日记深度提炼，建议强推理模型 (如 claude-3-7-sonnet, gpt-4o)", y: y, width: fieldWidth)
-        contentView.addSubview(rHint)
+        // 6. 独立复盘模型配置勾选框
+        y -= 32
+        customReportCheck = NSButton(checkboxWithTitle: "深度复盘使用独立平台接口与密钥", target: self, action: #selector(toggleCustomReport))
+        customReportCheck.frame = NSRect(x: fieldX, y: y, width: fieldWidth, height: 20)
+        customReportCheck.font = NSFont.systemFont(ofSize: 11.5)
+        contentView.addSubview(customReportCheck)
 
-        // 说明提示（自动换行，绝不截断）
+        // 7. 独立复盘接口字段 (受勾选框控制启用/置灰)
         y -= 34
-        let tipLabel = createHintLabel("💡 说明：使用同一平台（如 DeepSeek / OpenAI / Ollama）时，两个模型共用相同 API 地址与 Key。", y: y, width: fieldWidth, height: 32)
-        tipLabel.textColor = .tertiaryLabelColor
-        contentView.addSubview(tipLabel)
+        reportUrlLabel = createLabel("复盘 API 接口:", y: y, width: labelWidth)
+        contentView.addSubview(reportUrlLabel)
+        reportUrlField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(reportUrlField)
 
-        // Status Label (连接测试状态反馈)
         y -= 36
-        statusLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 20))
+        reportKeyLabel = createLabel("复盘 API 密钥:", y: y, width: labelWidth)
+        contentView.addSubview(reportKeyLabel)
+        reportKeyField = NSSecureTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
+        contentView.addSubview(reportKeyField)
+
+        // 8. Status Label (连接测试状态反馈)
+        y -= 30
+        statusLabel = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 18))
         statusLabel.isBezeled = false
         statusLabel.isEditable = false
         statusLabel.drawsBackground = false
@@ -295,23 +311,23 @@ class SettingsWindowController: NSWindowController {
         statusLabel.textColor = .secondaryLabelColor
         contentView.addSubview(statusLabel)
 
-        // 按钮区域
-        y -= 45
-        let testBtn = NSButton(frame: NSRect(x: 140, y: y, width: 100, height: 28))
+        // 9. 按钮区域
+        y -= 38
+        let testBtn = NSButton(frame: NSRect(x: fieldX, y: y, width: 95, height: 28))
         testBtn.title = "测试连接"
         testBtn.bezelStyle = .rounded
         testBtn.target = self
         testBtn.action = #selector(testConnection)
         contentView.addSubview(testBtn)
 
-        let cancelBtn = NSButton(frame: NSRect(x: 285, y: y, width: 85, height: 28))
+        let cancelBtn = NSButton(frame: NSRect(x: 275, y: y, width: 85, height: 28))
         cancelBtn.title = "取消"
         cancelBtn.bezelStyle = .rounded
         cancelBtn.target = self
         cancelBtn.action = #selector(cancelAction)
         contentView.addSubview(cancelBtn)
 
-        let saveBtn = NSButton(frame: NSRect(x: 385, y: y, width: 95, height: 28))
+        let saveBtn = NSButton(frame: NSRect(x: 375, y: y, width: 95, height: 28))
         saveBtn.title = "保存生效"
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
@@ -320,7 +336,7 @@ class SettingsWindowController: NSWindowController {
         contentView.addSubview(saveBtn)
     }
 
-    private func createLabel(_ text: String, y: CGFloat, width: CGFloat, toolTip: String? = nil) -> NSTextField {
+    private func createLabel(_ text: String, y: CGFloat, width: CGFloat) -> NSTextField {
         let label = NSTextField(frame: NSRect(x: 10, y: y + 2, width: width, height: 20))
         label.stringValue = text
         label.isBezeled = false
@@ -329,22 +345,50 @@ class SettingsWindowController: NSWindowController {
         label.alignment = .right
         label.font = NSFont.systemFont(ofSize: 12)
         label.textColor = .labelColor
-        if let tt = toolTip {
-            label.toolTip = tt
-        }
         return label
     }
 
-    private func createHintLabel(_ text: String, y: CGFloat, width: CGFloat, height: CGFloat = 16) -> NSTextField {
-        let label = NSTextField(frame: NSRect(x: 140, y: y, width: width, height: height))
-        label.stringValue = text
-        label.isBezeled = false
-        label.isEditable = false
-        label.drawsBackground = false
-        label.font = NSFont.systemFont(ofSize: 10.5)
-        label.textColor = .secondaryLabelColor
-        label.cell?.wraps = true
-        return label
+    private func createInfoButton(x: CGFloat, y: CGFloat, tip: String, action: Selector) -> NSButton {
+        let btn = NSButton(frame: NSRect(x: x, y: y, width: 16, height: 16))
+        btn.isBordered = false
+        let conf = NSImage.SymbolConfiguration(pointSize: 11.5, weight: .regular)
+        btn.image = NSImage(systemSymbolName: "info.circle", accessibilityDescription: "说明")?.withSymbolConfiguration(conf)
+        btn.contentTintColor = .secondaryLabelColor
+        btn.toolTip = tip
+        btn.target = self
+        btn.action = action
+        return btn
+    }
+
+    @objc private func showAnalysisInfo() {
+        let alert = NSAlert()
+        alert.messageText = "会话分析模型说明"
+        alert.informativeText = "【白天高频微会话分析】\n\n• 触发时机：全天后台静默高频触发（应用切换、输入停顿聚类时）。\n• 核心职责：微会话切分、提取活跃项目名、实体标签与操作摘要。\n• 推荐模型：低延迟、低并发成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan）。单次分析仅耗时数十至数百毫秒。"
+        alert.alertStyle = .informational
+        alert.runModal()
+    }
+
+    @objc private func showReportInfo() {
+        let alert = NSAlert()
+        alert.messageText = "深度复盘模型说明"
+        alert.informativeText = "【晚间全天日记深度复盘】\n\n• 触发时机：晚间自动生成折腾日记或手动复盘时触发（每天仅 1 次）。\n• 核心职责：长上下文推理，提炼全天技术攻坚脉络、代码决策与第一人称叙事故事。\n• 推荐模型：高智能、长上下文推理的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router）。"
+        alert.alertStyle = .informational
+        alert.runModal()
+    }
+
+    @objc private func toggleCustomReport() {
+        let isCustom = customReportCheck.state == .on
+        reportUrlField.isEnabled = isCustom
+        reportKeyField.isEnabled = isCustom
+        reportUrlLabel.textColor = isCustom ? .labelColor : .tertiaryLabelColor
+        reportKeyLabel.textColor = isCustom ? .labelColor : .tertiaryLabelColor
+        if !isCustom {
+            reportUrlField.placeholderString = "默认共用上方主 API 接口地址"
+            reportKeyField.placeholderString = "默认共用上方主 API 密钥"
+        } else {
+            reportUrlField.placeholderString = "例如：https://api.openai.com/v1"
+            reportKeyField.placeholderString = "sk-..."
+        }
     }
 
     @objc private func providerChanged() {
@@ -382,6 +426,8 @@ class SettingsWindowController: NSWindowController {
         var key = "magpie-local"
         var analysis = "group/fast-scan"
         var report = "group/smart-router"
+        var rUrl = ""
+        var rKey = ""
 
         if let data = try? Data(contentsOf: URL(fileURLWithPath: configPath)),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -389,12 +435,25 @@ class SettingsWindowController: NSWindowController {
             if let k = json["llmApiKey"] as? String { key = k }
             if let a = json["analysisModel"] as? String { analysis = a }
             if let r = json["reportModel"] as? String { report = r }
+            if let ru = json["reportApiBase"] as? String { rUrl = ru }
+            if let rk = json["reportApiKey"] as? String { rKey = rk }
         }
 
         urlField.stringValue = url
         keyField.stringValue = key
         analysisField.stringValue = analysis
         reportField.stringValue = report
+
+        if !rUrl.isEmpty {
+            reportUrlField.stringValue = rUrl
+            reportKeyField.stringValue = rKey
+            customReportCheck.state = .on
+        } else {
+            reportUrlField.stringValue = ""
+            reportKeyField.stringValue = ""
+            customReportCheck.state = .off
+        }
+        toggleCustomReport()
 
         if url.contains("127.0.0.1:3425") {
             providerPopUp.selectItem(at: 0)
@@ -410,14 +469,14 @@ class SettingsWindowController: NSWindowController {
     }
 
     @objc private func testConnection() {
-        statusLabel.stringValue = "正在测试连接..."
+        statusLabel.stringValue = "正在测试主接口连接..."
         statusLabel.textColor = .secondaryLabelColor
 
         let urlStr = urlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         let keyStr = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard let url = URL(string: "\(urlStr)/models") else {
-            statusLabel.stringValue = "✕ API 地址无效"
+            statusLabel.stringValue = "✕ 主 API 地址无效"
             statusLabel.textColor = .systemRed
             return
         }
@@ -432,19 +491,49 @@ class SettingsWindowController: NSWindowController {
         URLSession.shared.dataTask(with: req) { _, response, error in
             DispatchQueue.main.async {
                 if let error = error {
-                    self.statusLabel.stringValue = "✕ 连接失败: \(error.localizedDescription)"
+                    self.statusLabel.stringValue = "✕ 主接口失败: \(error.localizedDescription)"
                     self.statusLabel.textColor = .systemRed
                     return
                 }
-                if let http = response as? HTTPURLResponse {
-                    if (200...299).contains(http.statusCode) {
-                        self.statusLabel.stringValue = "✓ 连接成功 (HTTP \(http.statusCode))"
-                        self.statusLabel.textColor = .systemGreen
-                    } else {
-                        self.statusLabel.stringValue = "✕ 响应异常 (HTTP \(http.statusCode))"
-                        self.statusLabel.textColor = .systemRed
+                guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+                    let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+                    self.statusLabel.stringValue = "✕ 主接口异常 (HTTP \(code))"
+                    self.statusLabel.textColor = .systemRed
+                    return
+                }
+
+                if self.customReportCheck.state == .on {
+                    let rUrlStr = self.reportUrlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rKeyStr = self.reportKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !rUrlStr.isEmpty, let rUrl = URL(string: "\(rUrlStr)/models") {
+                        self.statusLabel.stringValue = "主接口成功，正在测试独立复盘接口..."
+                        var rReq = URLRequest(url: rUrl)
+                        rReq.httpMethod = "GET"
+                        rReq.timeoutInterval = 4.0
+                        if !rKeyStr.isEmpty {
+                            rReq.setValue("Bearer \(rKeyStr)", forHTTPHeaderField: "Authorization")
+                        }
+                        URLSession.shared.dataTask(with: rReq) { _, rResp, rErr in
+                            DispatchQueue.main.async {
+                                if let rErr = rErr {
+                                    self.statusLabel.stringValue = "✓ 主接口成功，但独立复盘接口连接失败: \(rErr.localizedDescription)"
+                                    self.statusLabel.textColor = .systemOrange
+                                } else if let rHttp = rResp as? HTTPURLResponse, (200...299).contains(rHttp.statusCode) {
+                                    self.statusLabel.stringValue = "✓ 两个接口均连接成功 (HTTP 200)"
+                                    self.statusLabel.textColor = .systemGreen
+                                } else {
+                                    let rCode = (rResp as? HTTPURLResponse)?.statusCode ?? 0
+                                    self.statusLabel.stringValue = "✓ 主接口成功，复盘接口异常 (HTTP \(rCode))"
+                                    self.statusLabel.textColor = .systemOrange
+                                }
+                            }
+                        }.resume()
+                        return
                     }
                 }
+
+                self.statusLabel.stringValue = "✓ 连接成功 (HTTP \(http.statusCode))"
+                self.statusLabel.textColor = .systemGreen
             }
         }.resume()
     }
@@ -468,6 +557,24 @@ class SettingsWindowController: NSWindowController {
         dict["llmApiKey"] = keyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         dict["analysisModel"] = analysisField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         dict["reportModel"] = reportField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if customReportCheck.state == .on {
+            let rUrl = reportUrlField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            let rKey = reportKeyField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rUrl.isEmpty {
+                dict["reportApiBase"] = rUrl
+            } else {
+                dict.removeValue(forKey: "reportApiBase")
+            }
+            if !rKey.isEmpty {
+                dict["reportApiKey"] = rKey
+            } else {
+                dict.removeValue(forKey: "reportApiKey")
+            }
+        } else {
+            dict.removeValue(forKey: "reportApiBase")
+            dict.removeValue(forKey: "reportApiKey")
+        }
 
         if let outData = try? JSONSerialization.data(withJSONObject: dict, options: .prettyPrinted) {
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)

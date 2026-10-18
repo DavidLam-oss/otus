@@ -158,7 +158,9 @@ export class ActivityAnalyzer {
     const sanitizedPrompt = redactSensitiveText(userPrompt).redacted;
 
     // 4. 调用大模型 (若未配置或离线，自动使用本地离线启发式分析兜底，确保全链路跑通)
-    const hasLlm = !!this.config.llmApiKey || this.config.llmApiBase.includes("localhost") || this.config.llmApiBase.includes("127.0.0.1");
+    const apiBase = this.config.analysisApiBase || this.config.llmApiBase;
+    const apiKey = this.config.analysisApiKey !== undefined ? this.config.analysisApiKey : this.config.llmApiKey;
+    const hasLlm = !!apiKey || apiBase.includes("localhost") || apiBase.includes("127.0.0.1");
     if (!hasLlm) {
       return this.applyOfflineHeuristic(session, ocrSnippets, "No LLM configured");
     }
@@ -351,12 +353,14 @@ export class ActivityAnalyzer {
   }
 
   private async callLLM(systemPrompt: string, userPrompt: string, model: string): Promise<string> {
-    const url = `${this.config.llmApiBase.replace(/\/+$/, "")}/chat/completions`;
+    const apiBase = this.config.analysisApiBase || this.config.llmApiBase;
+    const apiKey = this.config.analysisApiKey !== undefined ? this.config.analysisApiKey : this.config.llmApiKey;
+    const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
     const headers: Record<string, string> = {
       "Content-Type": "application/json"
     };
-    if (this.config.llmApiKey) {
-      headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
+    if (apiKey) {
+      headers["Authorization"] = `Bearer ${apiKey}`;
     }
 
     const controller = new AbortController();

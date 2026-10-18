@@ -187,7 +187,11 @@ export class ActivitySummarizer {
     // 6. 生成复盘与洞察卡片 (LLM 深度反思 + 启发式兜底)
     const insights = await this.generateReviewInsights(skeleton, reportStats);
 
-    if (opts.skeletonOnly || !this.config.llmApiKey) {
+    const reportApiBase = this.config.reportApiBase || this.config.llmApiBase;
+    const reportApiKey = this.config.reportApiKey !== undefined ? this.config.reportApiKey : this.config.llmApiKey;
+    const hasReportLlm = !!reportApiKey || reportApiBase.includes("localhost") || reportApiBase.includes("127.0.0.1");
+
+    if (opts.skeletonOnly || !hasReportLlm) {
       this.store.upsertSummary({
         kind: "daily",
         dateKey: targetDate,
@@ -496,9 +500,11 @@ export class ActivitySummarizer {
   }
 
   private async narrativePass(skeleton: string): Promise<string> {
-    const url = `${this.config.llmApiBase.replace(/\/+$/, "")}/chat/completions`;
+    const apiBase = this.config.reportApiBase || this.config.llmApiBase;
+    const apiKey = this.config.reportApiKey !== undefined ? this.config.reportApiKey : this.config.llmApiKey;
+    const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.config.llmApiKey) headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     let lastError: any;
     for (let attempt = 0; attempt <= 2; attempt++) {
@@ -565,9 +571,11 @@ export class ActivitySummarizer {
     skeleton: string,
     stats: any
   ): Promise<Array<{ type: string; tag: string; title: string; content: string }>> {
-    const url = `${this.config.llmApiBase.replace(/\/+$/, "")}/chat/completions`;
+    const apiBase = this.config.reportApiBase || this.config.llmApiBase;
+    const apiKey = this.config.reportApiKey !== undefined ? this.config.reportApiKey : this.config.llmApiKey;
+    const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (this.config.llmApiKey) headers["Authorization"] = `Bearer ${this.config.llmApiKey}`;
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
     try {
       const controller = new AbortController();

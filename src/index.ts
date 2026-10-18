@@ -312,10 +312,12 @@ async function main() {
 Usage: otus config set <key> <value>
 
 Supported keys:
-  url, llmApiBase          LLM API base URL (e.g. https://api.openai.com/v1)
-  key, llmApiKey           LLM API Key
+  url, llmApiBase          Unified LLM API base URL (e.g. https://api.openai.com/v1)
+  key, llmApiKey           Unified LLM API Key
   analysis, analysisModel  Fast model for session analysis (e.g. gpt-4o-mini, deepseek-chat)
-  report, reportModel      Reasoning model for daily summary (e.g. gpt-4o, claude-3-5-sonnet)
+  report, reportModel      Reasoning model for daily summary (e.g. gpt-4o, claude-3-7-sonnet)
+  reporturl, reportApiBase Optional independent API URL for report model
+  reportkey, reportApiKey  Optional independent API Key for report model
           `);
           return;
         }
@@ -328,7 +330,15 @@ Supported keys:
           analysis: "analysisModel",
           analysismodel: "analysisModel",
           report: "reportModel",
-          reportmodel: "reportModel"
+          reportmodel: "reportModel",
+          reporturl: "reportApiBase",
+          reportapibase: "reportApiBase",
+          reportkey: "reportApiKey",
+          reportapikey: "reportApiKey",
+          analysisurl: "analysisApiBase",
+          analysisapibase: "analysisApiBase",
+          analysiskey: "analysisApiKey",
+          analysisapikey: "analysisApiKey"
         };
 
         const targetKey = keyMap[key.toLowerCase()] || (key as keyof OtusConfig);
@@ -343,10 +353,10 @@ Supported keys:
 =========================================
  Otus Configuration (${CONFIG_FILE})
 =========================================
-LLM API Base:      ${conf.llmApiBase}
-LLM API Key:       ${conf.llmApiKey ? conf.llmApiKey.slice(0, 4) + "..." + conf.llmApiKey.slice(-4) : "(not set)"}
-Analysis Model:    ${conf.analysisModel}
-Report Model:      ${conf.reportModel}
+Unified API Base:  ${conf.llmApiBase}
+Unified API Key:   ${conf.llmApiKey ? conf.llmApiKey.slice(0, 4) + "..." + conf.llmApiKey.slice(-4) : "(not set)"}
+Analysis Model:    ${conf.analysisModel} ${conf.analysisApiBase ? `(Custom: ${conf.analysisApiBase})` : ""}
+Report Model:      ${conf.reportModel} ${conf.reportApiBase ? `(Custom: ${conf.reportApiBase})` : ""}
 Storage Limit:     ${(conf.maxStorageBytes / (1024 * 1024 * 1024)).toFixed(1)} GB
 Snapshot Quality:  ${conf.snapshotQuality}% (max width: ${conf.snapshotMaxWidth}px)
 =========================================
