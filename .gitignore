@@ -14,6 +14,7 @@ logs/
 outputs/
 *.html
 !assets/template.html
+!.agents/skills/otus-journal/references/sample.html
 *.log
 *.tmp
 tmp/
