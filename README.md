@@ -34,13 +34,40 @@ Alma 是一款非常出色的桌面 AI 伴侣，其最打动人心的功能莫�
 
 ---
 
-## 🚀 快速上手
+## 📦 下载与安装 (macOS)
+
+### 方式 1：下载预编译 DMG 安装包（推荐）
+
+1. 前往 [GitHub Releases](https://github.com/DavidLam-oss/otus/releases) 下载最新的 `Otus-Installer.dmg`（仅 ~6MB）；
+2. 双击打开镜像，将 `Otus.app` 拖入 `Applications`（应用程序）文件夹；
+3. 从 Launchpad 或「应用程序」中启动 Otus，即可在 macOS 顶部菜单栏看到常驻夜枭图标。
+
+> [!IMPORTANT]
+> **关于 macOS Gatekeeper 安全门禁与权限授予说明：**
+> 
+> 由于开源项目未购买苹果年费开发者证书，macOS 首次打开可能会提示「无法打开，因为无法验证开发者」或「已损坏」。这是 macOS 对未签名开源软件的默认安全策略，请按以下指引正常开启：
+> 
+> 1. **首次绕过 Gatekeeper**：
+>    - **访达右键打开（最简）**：在「访达」->「应用程序」中，**按住 Control 键点按（或右键）`Otus.app` -> 选择【打开】**，在弹出的系统确认框中点击【打开】即可。后续系统将永久信任，双击即可直接秒开；
+>    - **或终端极客一键**：在终端执行以下命令直接移除隔离标记：
+>      ```bash
+>      xattr -cr /Applications/Otus.app
+>      ```
+> 2. **系统权限授予（屏幕录制与辅助功能）**：
+>    首次启动时，系统会提示授权，请在「系统设置 -> 隐私与安全性」中开启：
+>    - **屏幕录制**：用于后台静默定期抓拍微会话与离线 OCR（图像仅在本地内存与 SQLite 处理，绝不上报）；
+>    - **辅助功能**：用于感知应用焦点切换、按键停顿与空闲检测。
+>    *(注：macOS 权限是与应用 Bundle ID `com.davidlin.otus` 绑定的，未签名完全不影响权限的正常获取与持久化)*
+
+---
+
+### 方式 2：从源码快速上手与本地构建
 
 ### 环境要求
 - macOS 13+ (Apple Silicon / Intel)
 - Node.js >= 22 (推荐 Node 26，内置 `node:sqlite` 与 `--experimental-strip-types`)
 
-### 基础命令
+### 基础命令行调用
 
 ```bash
 # 1. 查看当前守护进程状态与今日统计
@@ -82,7 +109,11 @@ Alma 是一款非常出色的桌面 AI 伴侣，其最打动人心的功能莫�
 
 Otus 支持任意兼容 OpenAI 协议的接口（包括本地 Ollama、DeepSeek、OpenAI、SiliconFlow 或 Magpie 网关）。具备完善的离线启发式分析兜底（未配置任何 API 亦可 100% 正常运行）。
 
-### 1. 命令行快速配置 (`otus config`)
+### 1. 菜单栏图形化配置 (GUI)
+
+点击菜单栏夜枭图标 -> 选择【偏好设置...】，即可在弹出的原生偏好面板中一键选择提供商预设（Magpie / DeepSeek / Ollama / OpenAI / 自定义），并直接进行接口连通性测试。
+
+### 2. 命令行快速配置 (`otus config`)
 
 无需手动修改环境变量，直接通过命令行配置并持久化到 `~/.otus/config.json`：
 

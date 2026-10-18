@@ -202,7 +202,7 @@ class SettingsWindowController: NSWindowController {
 
     convenience init() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 500, height: 380),
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 420),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -217,9 +217,9 @@ class SettingsWindowController: NSWindowController {
     private func setupUI() {
         guard let contentView = window?.contentView else { return }
 
-        var y: CGFloat = 330
+        var y: CGFloat = 370
         let labelWidth: CGFloat = 120
-        let fieldWidth: CGFloat = 320
+        let fieldWidth: CGFloat = 340
 
         // 预设提供商下拉选择
         let pLabel = createLabel("服务提供商:", y: y, width: labelWidth)
@@ -251,33 +251,42 @@ class SettingsWindowController: NSWindowController {
 
         // Analysis Model
         y -= 40
-        contentView.addSubview(createLabel("会话分析模型:", y: y, width: labelWidth))
+        let aTip = "【白天高频微会话分析】推荐使用低延迟、低成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan），每次分析仅耗时数十至数百毫秒。"
+        let aLabel = createLabel("会话分析模型:", y: y, width: labelWidth, toolTip: aTip)
+        contentView.addSubview(aLabel)
         analysisField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
         analysisField.placeholderString = "例如：group/fast-scan 或 deepseek-chat"
-        analysisField.toolTip = "【白天高频微会话分析】推荐使用低延迟、低成本的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan），每次分析仅耗时数百毫秒。"
+        analysisField.toolTip = aTip
         contentView.addSubview(analysisField)
 
+        // Analysis Model Hint
+        y -= 19
+        let aHint = createHintLabel("⏱️ 负责白天微会话分析，建议低延迟轻量模型 (如 deepseek-chat, gpt-4o-mini)", y: y, width: fieldWidth)
+        contentView.addSubview(aHint)
+
         // Report Model
-        y -= 40
-        contentView.addSubview(createLabel("深度复盘模型:", y: y, width: labelWidth))
+        y -= 38
+        let rTip = "【晚间全天日记深度复盘】推荐使用具备复杂长上下文推理与代码理解能力的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router），提炼全天技术攻坚与代码决策。"
+        let rLabel = createLabel("深度复盘模型:", y: y, width: labelWidth, toolTip: rTip)
+        contentView.addSubview(rLabel)
         reportField = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 24))
         reportField.placeholderString = "例如：group/smart-router 或 gpt-4o"
-        reportField.toolTip = "【晚间全天日记深度复盘】推荐使用具备复杂上下文推理与代码理解能力的旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router），能够提炼全天技术攻坚脉络与代码决策。"
+        reportField.toolTip = rTip
         contentView.addSubview(reportField)
 
-        // 说明提示
-        y -= 26
-        let tipLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 18))
-        tipLabel.stringValue = "💡 单一平台（如 DeepSeek/OpenAI/Ollama）两个模型共用相同 API 地址与 Key"
-        tipLabel.isBezeled = false
-        tipLabel.isEditable = false
-        tipLabel.drawsBackground = false
-        tipLabel.font = NSFont.systemFont(ofSize: 10.5)
-        tipLabel.textColor = .secondaryLabelColor
+        // Report Model Hint
+        y -= 19
+        let rHint = createHintLabel("🧠 负责晚间技术日记深度提炼，建议强推理模型 (如 claude-3-7-sonnet, gpt-4o)", y: y, width: fieldWidth)
+        contentView.addSubview(rHint)
+
+        // 说明提示（自动换行，绝不截断）
+        y -= 34
+        let tipLabel = createHintLabel("💡 说明：使用同一平台（如 DeepSeek / OpenAI / Ollama）时，两个模型共用相同 API 地址与 Key。", y: y, width: fieldWidth, height: 32)
+        tipLabel.textColor = .tertiaryLabelColor
         contentView.addSubview(tipLabel)
 
         // Status Label (连接测试状态反馈)
-        y -= 24
+        y -= 36
         statusLabel = NSTextField(frame: NSRect(x: 140, y: y, width: fieldWidth, height: 20))
         statusLabel.isBezeled = false
         statusLabel.isEditable = false
@@ -287,7 +296,7 @@ class SettingsWindowController: NSWindowController {
         contentView.addSubview(statusLabel)
 
         // 按钮区域
-        y -= 40
+        y -= 45
         let testBtn = NSButton(frame: NSRect(x: 140, y: y, width: 100, height: 28))
         testBtn.title = "测试连接"
         testBtn.bezelStyle = .rounded
@@ -295,14 +304,14 @@ class SettingsWindowController: NSWindowController {
         testBtn.action = #selector(testConnection)
         contentView.addSubview(testBtn)
 
-        let cancelBtn = NSButton(frame: NSRect(x: 275, y: y, width: 85, height: 28))
+        let cancelBtn = NSButton(frame: NSRect(x: 285, y: y, width: 85, height: 28))
         cancelBtn.title = "取消"
         cancelBtn.bezelStyle = .rounded
         cancelBtn.target = self
         cancelBtn.action = #selector(cancelAction)
         contentView.addSubview(cancelBtn)
 
-        let saveBtn = NSButton(frame: NSRect(x: 365, y: y, width: 95, height: 28))
+        let saveBtn = NSButton(frame: NSRect(x: 385, y: y, width: 95, height: 28))
         saveBtn.title = "保存生效"
         saveBtn.bezelStyle = .rounded
         saveBtn.keyEquivalent = "\r"
@@ -311,7 +320,7 @@ class SettingsWindowController: NSWindowController {
         contentView.addSubview(saveBtn)
     }
 
-    private func createLabel(_ text: String, y: CGFloat, width: CGFloat) -> NSTextField {
+    private func createLabel(_ text: String, y: CGFloat, width: CGFloat, toolTip: String? = nil) -> NSTextField {
         let label = NSTextField(frame: NSRect(x: 10, y: y + 2, width: width, height: 20))
         label.stringValue = text
         label.isBezeled = false
@@ -320,6 +329,21 @@ class SettingsWindowController: NSWindowController {
         label.alignment = .right
         label.font = NSFont.systemFont(ofSize: 12)
         label.textColor = .labelColor
+        if let tt = toolTip {
+            label.toolTip = tt
+        }
+        return label
+    }
+
+    private func createHintLabel(_ text: String, y: CGFloat, width: CGFloat, height: CGFloat = 16) -> NSTextField {
+        let label = NSTextField(frame: NSRect(x: 140, y: y, width: width, height: height))
+        label.stringValue = text
+        label.isBezeled = false
+        label.isEditable = false
+        label.drawsBackground = false
+        label.font = NSFont.systemFont(ofSize: 10.5)
+        label.textColor = .secondaryLabelColor
+        label.cell?.wraps = true
         return label
     }
 
