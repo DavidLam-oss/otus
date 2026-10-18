@@ -260,24 +260,24 @@ class SettingsWindowController: NSWindowController {
         // 4. 会话分析模型 + ⓘ 纯悬停信息图标 (无冒号、不可点击)
         y -= 38
         contentView.addSubview(createLabel("会话分析模型", y: y, width: labelWidth))
-        let aTip = "【白天高频微会话分析】\n每当切屏或累积活动时自动在后台触发，负责切分会话并提取项目和标签。\n推荐使用毫秒级响应的轻量模型（如 deepseek-chat、gpt-4o-mini、qwen2.5:7b 或 Magpie 的 group/fast-scan）。"
+        let aTip = "【白天高频微会话分析】\n每当切屏或累积活动时自动在后台静默触发，负责切分会话并提取项目和标签。\n建议优先考虑响应速度与调用成本，选用轻量快速模型。"
         let aInfoIcon = createInfoIcon(x: labelWidth + 13, y: y + 4, tip: aTip)
         contentView.addSubview(aInfoIcon)
 
         analysisField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
-        analysisField.placeholderString = "例如：group/fast-scan 或 deepseek-chat"
+        analysisField.placeholderString = "请填写微会话分析模型名称"
         analysisField.toolTip = aTip
         contentView.addSubview(analysisField)
 
         // 5. 深度复盘模型 + ⓘ 纯悬停信息图标 (无冒号、不可点击)
         y -= 38
         contentView.addSubview(createLabel("深度复盘模型", y: y, width: labelWidth))
-        let rTip = "【晚间全天深度复盘】\n每天仅生成日终报告时触发一次，需长上下文梳理全天代码决策与攻坚历程。\n推荐使用推理旗舰模型（如 claude-3-7-sonnet、gpt-4o、deepseek-chat 或 Magpie 的 group/smart-router）。"
+        let rTip = "【晚间全天深度复盘】\n每天仅生成日终报告时触发一次，负责结合全天上下文梳理技术决策与攻坚历程。\n建议优先考虑上下文长度与逻辑分析质量，选用综合推理能力强的模型。"
         let rInfoIcon = createInfoIcon(x: labelWidth + 13, y: y + 4, tip: rTip)
         contentView.addSubview(rInfoIcon)
 
         reportField = NSTextField(frame: NSRect(x: fieldX, y: y, width: fieldWidth, height: 24))
-        reportField.placeholderString = "例如：group/smart-router 或 gpt-4o"
+        reportField.placeholderString = "请填写深度复盘模型名称"
         reportField.toolTip = rTip
         contentView.addSubview(reportField)
 
