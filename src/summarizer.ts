@@ -325,17 +325,24 @@ export class ActivitySummarizer {
     for (const item of sorted) {
       const tokens = this.extractTokens(item);
 
-      // 若有显式 project
+      // 若有显式 project：仍需交叉校验，不能无条件归并。
+      // 背景：project 由 LLM「推断」，实测会把「用 Obsidian 写关于 WorkBuddy 的文章」
+      // 误判成 obsidian-wechat-converter，进而污染整个主题。
       if (item.row.project) {
         const key = `proj:${item.row.project.toLowerCase()}`;
         const existing = clusters.find((c) => c.key === key);
-        if (existing) {
+        if (existing && this.isCompatibleWithCluster(existing, item)) {
           existing.sessions.push(item);
           this.mergeEntities(existing.entities, item.row.entities);
           for (const t of item.row.topics || []) {
             if (!existing.topics.includes(t)) existing.topics.push(t);
           }
           existing.totalMs += item.row.durationMs || 0;
+          continue;
+        }
+        if (existing) {
+          // 同 project 但内容不兼容：另起一个带后缀的簇，避免与错误归并混在一起
+          clusters.push(this.newCluster(`${key}#${clusters.length}`, item));
           continue;
         }
         clusters.push(this.newCluster(key, item));
@@ -346,6 +353,8 @@ export class ActivitySummarizer {
       let bestCluster: ThemeCluster | null = null;
       let maxSim = 0;
       for (const c of clusters) {
+        // 与 project 簇合并时同样要求 App 兼容，避免「写稿」被吸进「改代码」的主题
+        if (!this.isCompatibleWithCluster(c, item)) continue;
         const cTokens = this.clusterTokens(c);
         const sim = this.jaccard(tokens, cTokens);
         if (sim > maxSim) {
@@ -416,6 +425,43 @@ export class ActivitySummarizer {
       topics: [...(item.row.topics || [])],
       totalMs: item.row.durationMs || 0
     };
+  }
+
+  /**
+   * 判断会话是否与已有簇「内容兼容」。
+   *
+   * 目的：防止 LLM 误判 project 后污染整个主题。
+   * 实测案例：用 Obsidian 写关于 WorkBuddy 的公众号文章，
+   * LLM 把 project 判成 obsidian-wechat-converter，
+   * 导致 9 个「写稿做图」会话被归进「改插件代码」的主题。
+   *
+   * 判定依据（按可靠性排序）：
+   *   1. 共享 App（必要信号，最直接）：没有共同 App 视为不同活动
+   *   2. 共享实体（严格信号）：同仓库的 issue/pr 视为同一项目
+   * 两者都满足其一即兼容。
+   */
+  private isCompatibleWithCluster(cluster: ThemeCluster, item: any): boolean {
+    // 1. 共享 App
+    const clusterApps = new Set<string>();
+    for (const s of cluster.sessions) {
+      for (const a of s.row.appNames || []) clusterApps.add(a);
+    }
+    const itemApps = item.row.appNames || [];
+    const sharesApp = itemApps.some((a: string) => clusterApps.has(a));
+
+    // 2. 共享 repo/issue 实体
+    const clusterRepos = new Set<string>([
+      ...(cluster.entities.repos || []),
+      ...(cluster.entities.issues || []).map((i: any) => i?.repo).filter(Boolean)
+    ].map((r: string) => String(r).toLowerCase()));
+    const itemRepos = [
+      ...(item.row.entities?.repos || []),
+      ...(item.row.entities?.issues || []).map((i: any) => i?.repo).filter(Boolean)
+    ].map((r: string) => String(r).toLowerCase());
+    const sharesRepo = itemRepos.some((r) => clusterRepos.has(r));
+
+    // 只要共享 App 或共享仓库其一即可同簇
+    return sharesApp || sharesRepo;
   }
 
   private extractTokens(item: any): Set<string> {

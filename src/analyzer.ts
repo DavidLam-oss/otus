@@ -18,13 +18,22 @@ const OTUS_ANALYZER_SYSTEM_PROMPT = `你是一个桌面个人活动记录器的�
    - 如果该会话仅为系统锁屏（loginwindow / ScreenSaver / LockScreen）、无输入闲置挂机、随机刷网页摸鱼、或者 OCR 毫无实质操作内容，"worth" 必须设为 false。
 4. 事实准则：
    - 绝对严禁编造任何事实。提到的 PR 号、Issue、Commit、版本号、人名必须在 OCR 或事件中原样出现。
+5. project 字段的严格判定（极易出错，务必谨慎）：
+   - 只有当会话中**明确出现该项目自身的产物**时才填项目名，例如：
+     该项目仓库的 Issue/PR 页面、该项目的代码文件、该项目的构建/测试输出、该项目的发布页面。
+   - 以下情况 **project 必须填 null**：
+     - 只是借用某个 App（Obsidian / WorkBuddy / VS Code 等）来写稿、做图、整理资料
+     - 内容主题是「某产品怎么用」而不是「改这个产品的代码」
+     - 仅在谈论/检索某个项目，没有对其产物进行任何修改
+   - 例：用 Obsidian 写一篇关于 WorkBuddy 的公众号文章 → project 为 null，不是 obsidian-wechat-converter
+   - 例：在 Chrome 打开 obsidian-wechat-converter 的 Issue #83 并改动其代码 → project 为 obsidian-wechat-converter
 
 输出的 JSON 格式规范：
 {
   "worth": boolean,                    // 若为实质折腾/编码/深度阅读/沟通学习则为 true，无意义闲置或纯锁屏为 false
   "title": string,                     // 极简中文短语 (<= 30 字)，直击核心折腾内容
   "description": string,               // 1-2 句紧凑中文 (<= 120 字)，概括实际操作与关键产出
-  "project": string | null,            // 推断的项目名称 slug（如 "obsidian-wechat-converter", "otus"），无法确认填 null
+  "project": string | null,            // 仅当明确操作了该项目自身的产物时才填 slug，否则 null（见规则 5）
   "topics": string[],                  // 2-4 个精炼主题标签（如 ["发布", "eslint", "样式调试"]）
   "highlights": string[],              // 1-3 条具体行动/产出的中文要点 (<= 60 字/条)
   "entities": {
