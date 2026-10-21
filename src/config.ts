@@ -39,6 +39,18 @@ export interface OtusConfig {
 
   // 分析前的相邻会话合并窗口（毫秒）：间隔小于该值且共享 App 的碎片会被合并
   mergeGapMs: number;
+  // 可参与合并的短碎片时长上限：超过该时长的会话视为完整活动单元，不参与合并
+  mergeMaxDurationMs: number;
+
+  // 分析质量门槛：三项指标全部低于下限时才跳过 LLM（对齐 Alma）
+  minSessionDurationMs: number;
+  minSessionEventCount: number;
+  minSessionSnapshotCount: number;
+
+  // OCR 抽取参数
+  ocrCharBudget: number;      // 单会话 OCR 文本总字符预算
+  ocrDedupThreshold: number;  // 相邻文本相似度超过该值视为重复
+  maxOcrFrames: number;       // 最多读取的 OCR 帧数
 
   // 截图压缩配置 (1280 宽度 + 40 质量，体积缩减 98%)
   snapshotMaxWidth: number;
@@ -88,6 +100,14 @@ export const baseConfig: OtusConfig = {
   ocrLanguages: ["zh-Hans", "en-US"],
   ocrEveryN: 3,                   // 每 3 张快照才执行一次 OCR（对齐 Alma，降低 Vision 开销）
   mergeGapMs: 300000,             // 5 分钟内的相邻同类会话在分析前合并（对齐 Alma）
+  mergeMaxDurationMs: 180000,     // 3 分钟以内的会话视为碎片，可参与合并
+
+  minSessionDurationMs: 30000,    // 30 秒
+  minSessionEventCount: 20,       // 20 个事件
+  minSessionSnapshotCount: 3,     // 3 张快照
+  ocrCharBudget: 18000,           // 对齐 Alma 的 maxOcrChars
+  ocrDedupThreshold: 0.9,         // 相邻文本相似度 > 0.9 视为重复
+  maxOcrFrames: 400,              // 对齐 Alma
 
   // 截图压缩默认参数 (1280 宽度 + 40 质量)
   snapshotMaxWidth: 1280,
@@ -164,6 +184,13 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     pixelTolerance: roundTo(cfg.pixelTolerance, 30, 0, 255),
     // 合并窗口：过小则形同虚设，过大可能把不相关工作拼在一起
     mergeGapMs: roundTo(cfg.mergeGapMs, 300000, 60000, 1800000),
+    mergeMaxDurationMs: roundTo(cfg.mergeMaxDurationMs, 180000, 30000, 1800000),
+    minSessionDurationMs: roundTo(cfg.minSessionDurationMs, 30000, 0, 600000),
+    minSessionEventCount: roundTo(cfg.minSessionEventCount, 20, 0, 1000),
+    minSessionSnapshotCount: roundTo(cfg.minSessionSnapshotCount, 3, 0, 100),
+    ocrCharBudget: roundTo(cfg.ocrCharBudget, 18000, 1000, 64000),
+    ocrDedupThreshold: clampFloat(cfg.ocrDedupThreshold, 0.9, 0.5, 1.0),
+    maxOcrFrames: roundTo(cfg.maxOcrFrames, 400, 20, 2000),
   };
 }
 

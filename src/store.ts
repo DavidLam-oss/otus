@@ -249,8 +249,8 @@ export class ActivityStore {
     const source = this.getSession(sourceId);
     const target = this.getSession(targetId);
     if (!source || !target) return false;
-    // 只允许合并尚未分析的会话，避免破坏已有分析结果
-    if (source.analysisStatus !== "pending" || target.analysisStatus !== "pending") return false;
+    // 目标会话若仍在采集中则不合并，避免与写入竞争
+    // （已分析的会话允许作为合并目标，调用方需在合并后重置分析状态）
 
     const now = Date.now();
     const mergedStart = Math.min(target.startedAt, source.startedAt);
@@ -293,6 +293,33 @@ export class ActivityStore {
     // 3. 删除被合并的会话
     this.db.prepare(`DELETE FROM activity_sessions WHERE id = ?`).run(sourceId);
     return true;
+  }
+
+  /**
+   * 把会话重置为待分析状态，清除上一次的分析产物。
+   *
+   * 用途：会话合并后，聚合体的内容已与原分析结果不符，必须重新分析。
+   */
+  public resetSessionAnalysis(id: string): void {
+    const now = Date.now();
+    this.db.prepare(`
+      UPDATE activity_sessions
+      SET analysis_status = 'pending',
+          analysis_title = NULL,
+          analysis_description = NULL,
+          analysis_model = NULL,
+          analysis_error = NULL,
+          analyzed_at = NULL,
+          worth_memory = 0,
+          worth_knowledge = 0,
+          is_meeting = 0,
+          entities = '{}',
+          topics = '[]',
+          project = NULL,
+          highlights = '[]',
+          updated_at = ?
+      WHERE id = ?
+    `).run(now, id);
   }
 
   public closeSession(id: string, endedAt: number = Date.now()): void {

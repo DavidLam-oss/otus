@@ -145,28 +145,65 @@ export class ActivityAnalyzer {
   }
 
   /**
-   * 合并相邻的待分析碎片会话（对齐 Alma 的 mergePendingAdjacent）。
+   * 合并相邻的碎片会话（对齐 Alma 的 mergePendingAdjacent）。
    *
    * 判定条件（需同时满足）：
    *   1. 两个会话都已结束
    *   2. 间隔 < mergeGapMs（默认 5 分钟）
    *   3. 至少有一个共同使用的 App（避免把「看网页」和「写代码」拼在一起）
    *
+   * 重要：不再只限于 pending 会话。
+   * 生产时序下会话结束后约 100 秒就会被单条分析，合并追不上；
+   * 因此对「较短且已分析」的会话也做合并，合并体重置为 pending 重新分析。
+   *
+   * 保护条件（避免误伤）：
+   *   - 只合并短会话（durationMs < mergeMaxDurationMs），长会话本就是完整活动单元
+   *   - 不合并 marked 为 meeting 的会话（会议有独立语义）
+   *   - 至少有一方是短碎片才合并，避免两个长会话被拼在一起
+   *
    * 合并方向：后一个会话并入前一个，保留时间轴上更早的作为主体。
+   *
+   * 防过度合并：
+   *   - 记录每个合并体的「原始结束时间」，间隔判断始终基于上一段原始片段，
+   *     避免链式合并把 A→B→C→D 累积成一整个下午
+   *   - 合并体总时长不得超过 mergeGapMs，防止把长时间跨度的活动拼成一条
    */
   public mergePendingAdjacent(): number {
-    const list = this.store
-      .listSessions({ analysisStatus: "pending", limit: 200 })
+    // 注意：listSessions 按 started_at ASC 返回，limit 会截断到「最早的 N 条」。
+    // 合并只关心近期会话，因此先取足够大的时间窗（24 小时）再在内存中排序。
+    const since = Date.now() - 24 * 3600 * 1000;
+    const candidates = this.store
+      .listSessions({ since, limit: 2000 })
       .filter((s) => s.endedAt !== null)
       .sort((a, b) => a.startedAt - b.startedAt);
 
+    // 合并体追踪：targetId → 该合并体覆盖的时间跨度与「最后一段原始片段」的结束时间
+    const chainEnd = new Map<string, number>();   // 最后一段原始片段的 endedAt
+    const chainStart = new Map<string, number>(); // 合并体最早开始时间
+
     let merged = 0;
-    for (let i = 0; i < list.length - 1; i++) {
-      const prev = list[i];
-      const next = list[i + 1];
-      const gap = next.startedAt - (prev.endedAt ?? prev.startedAt);
-      // 间隔为负说明时间重叠，不做合并；超出合并窗口也不合并
+    for (let i = 0; i < candidates.length - 1; i++) {
+      const prev = candidates[i];
+      const next = candidates[i + 1];
+
+      // 间隔以「上一段原始片段的结束时间」为准，而不是合并体总结束时间
+      const prevRawEnd = chainEnd.get(prev.id) ?? (prev.endedAt ?? prev.startedAt);
+      const gap = next.startedAt - prevRawEnd;
       if (gap < 0 || gap > this.config.mergeGapMs) continue;
+
+      // 至少有一方是短碎片，才有合并意义
+      const prevShort = (prev.durationMs || 0) < this.config.mergeMaxDurationMs;
+      const nextShort = (next.durationMs || 0) < this.config.mergeMaxDurationMs;
+      if (!prevShort && !nextShort) continue;
+
+      // 合并体总时长不得超过合并窗口，防止无限链式累积
+      const prevStart = chainStart.get(prev.id) ?? prev.startedAt;
+      const nextEnd = next.endedAt ?? next.startedAt;
+      if (nextEnd - prevStart > this.config.mergeGapMs) continue;
+
+      // 会议会话保持独立
+      if (prev.isMeeting || next.isMeeting) continue;
+
       // 两者都记录了 App 且完全没有交集时，视为不同活动，不合并
       const hasCommonApp =
         prev.appNames.length === 0 ||
@@ -175,8 +212,20 @@ export class ActivityAnalyzer {
       if (!hasCommonApp) continue;
 
       if (this.store.mergeSessionInto(next.id, prev.id)) {
+        // 合并体可能已分析过，需重置为 pending 让新聚合体重新分析
+        this.store.resetSessionAnalysis(prev.id);
         merged++;
-        list.splice(i + 1, 1);
+
+        // 更新链式追踪：合并体的起点取更早者，最后一段原始片段取 next 的结束时间
+        const prevStartForKey = chainStart.get(prev.id) ?? prev.startedAt;
+        const nextStartForKey = chainStart.get(next.id) ?? next.startedAt;
+        chainStart.set(prev.id, Math.min(prevStartForKey, nextStartForKey));
+        chainEnd.set(prev.id, next.endedAt ?? next.startedAt);
+
+        // 更新内存中的 prev，便于继续与下一个会话比较
+        const refreshed = this.store.getSession(prev.id);
+        if (refreshed) candidates[i] = refreshed;
+        candidates.splice(i + 1, 1);
         i--; // 合并后当前位置可能继续与下一个会话相邻
       }
     }
@@ -191,19 +240,91 @@ export class ActivityAnalyzer {
     return !!apiKey || apiBase.includes("localhost") || apiBase.includes("127.0.0.1");
   }
 
-  public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "failed"> {
-    // 1. 抽取该 session 的 OCR 抽稀片段 (最多 6 条, 每条 <= 400 字符)
-    const ocrFrames = this.store.listOcrForSession(session.id, 20);
-    const ocrSnippets: string[] = [];
-    let lastSnippet = "";
-    for (const frame of ocrFrames) {
-      const clean = frame.text.replace(/\s+/g, " ").trim();
-      if (clean && clean !== lastSnippet) {
-        lastSnippet = clean;
-        ocrSnippets.push(clean.slice(0, 400));
-        if (ocrSnippets.length >= 6) break;
-      }
+  /** 是否低于质量门槛（对齐 Alma：三项全都低于下限才跳过） */
+  private isBelowQualityGate(session: ActivitySession): boolean {
+    const durationMs = session.durationMs || 0;
+    const events = session.eventCount || 0;
+    const snaps = session.snapshotCount || 0;
+    return (
+      durationMs < this.config.minSessionDurationMs &&
+      events < this.config.minSessionEventCount &&
+      snaps < this.config.minSessionSnapshotCount
+    );
+  }
+
+  /**
+   * 抽取 OCR 片段（对齐 Alma 的去重策略）。
+   *
+   * 相较旧实现的两点改进：
+   *   1. 用相似度而非全等判重：相邻文本相似度 > ocrDedupThreshold 视为重复，
+   *      能过滤掉「同一页面滚动几个像素」产生的近重复 OCR
+   *   2. 字符预算从固定 6×400 提升到 ocrCharBudget，给长会话更完整的上下文
+   */
+  private extractOcrSnippets(sessionId: string): string[] {
+    const frames = this.store.listOcrForSession(sessionId, this.config.maxOcrFrames);
+    const cleaned: string[] = [];
+    for (const f of frames) {
+      const t = f.text.replace(/\s+/g, " ").trim();
+      if (t) cleaned.push(t);
     }
+
+    // 相邻相似度去重
+    const deduped: string[] = [];
+    let prev = "";
+    for (const t of cleaned) {
+      if (!prev || this.textSimilarity(t, prev) <= this.config.ocrDedupThreshold) {
+        deduped.push(t);
+      }
+      prev = t;
+    }
+
+    // 按字符预算截断，避免超出 LLM 上下文
+    const out: string[] = [];
+    let used = 0;
+    for (const t of deduped) {
+      if (used + t.length > this.config.ocrCharBudget && out.length > 0) break;
+      out.push(t);
+      used += t.length;
+    }
+    return out;
+  }
+
+  /**
+   * 轻量文本相似度（0~1）。用字符二元组 Jaccard，避免引入额外依赖。
+   * 对 OCR 场景足够：能识别「同一页面轻微变化」的近重复文本。
+   */
+  private textSimilarity(a: string, b: string): number {
+    if (a === b) return 1;
+    if (!a || !b) return 0;
+    const bigrams = (s: string): Set<string> => {
+      const set = new Set<string>();
+      for (let i = 0; i < s.length - 1; i++) set.add(s.slice(i, i + 2));
+      return set;
+    };
+    const A = bigrams(a);
+    const B = bigrams(b);
+    if (A.size === 0 || B.size === 0) return 0;
+    let inter = 0;
+    for (const g of A) if (B.has(g)) inter++;
+    return inter / (A.size + B.size - inter);
+  }
+
+  public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "failed"> {
+    // 0. 质量前置过滤（对齐 Alma 的 processSession 门槛）
+    // 与「交给 LLM 判 not_worth」不同：低于确定阈值时根本不该消耗 LLM 调用。
+    // 注意用「或」语义——任一指标达标就仍要分析，避免误杀。
+    if (this.isBelowQualityGate(session)) {
+      this.store.setSessionAnalysis(session.id, {
+        status: "not_worth",
+        title: null,
+        description: "低于质量门槛，未送分析。",
+        model: "quality-gate"
+      });
+      return "analyzed";
+    }
+
+    // 1. 抽取该 session 的 OCR 抽稀片段
+    const ocrSnippets = this.extractOcrSnippets(session.id);
 
     // 2. 抽取浏览器活跃访问与窗口标题
     const events = this.store.listEvents(session.id, 200);
