@@ -22,6 +22,38 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
    - 输出开头不要有任何前言、说明或代码块标记。
 `;
 
+const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。你会收到某一天全部会话的清单，
+每条包含：编号、时间、时长、使用过的 App、分析标题、OCR 摘录、浏览过的 URL。
+
+你的任务是：把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
+
+判定原则（按优先级）：
+1. **看前后文，不看单个会话**。同一段时间连续做同一类事，即使单条标题措辞不同，也应归为同一主题。
+2. 判断依据是「实际在产出什么」，不是「打开了哪个 App」。
+   例：用 Obsidian 和 WorkBuddy 写关于某产品的公众号文章 → 主题是「写公众号文章」，
+   即使侧边栏里出现过别的项目名，也不代表在改那个项目的代码。
+3. 只有当会话里**明确出现该项目的产物**（该仓库的 Issue/PR、代码文件、构建命令、git 操作）
+   才可以把主题命名为该项目的名字。
+4. 应用侧边栏、工作区列表、历史任务标题里出现的项目名，**不能**作为主题命名的依据。
+5. 主题数量控制在 3~12 个之间。宁可少而准，不要多而碎。
+6. 时间上明显分散、内容也无关的活动，应分到不同主题。
+
+输出格式（严格 JSON，不要任何解释文字）：
+{
+  "themes": [
+    {
+      "name": "主题名（<= 16 字，具体而非空泛）",
+      "sessionIds": ["s0", "s3", "s7"]
+    }
+  ]
+}
+
+要求：
+- 每个会话编号必须且只能出现在一个主题里，不得遗漏、不得重复。
+- 只能使用输入中出现过的会话编号。
+
+`;
+
 const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与效能分析专家。根据用户全天的活动骨架与统计数据，以犀利、具体、直击要害的口吻生成 4-6 条高质量的「工作流深度复盘与洞察」卡片。
 
 请输出一个合法的 JSON 数组，每个卡片结构如下：
@@ -44,6 +76,8 @@ const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与�
 export interface ThemeCluster {
   key: string;
   project: string | null;
+  // LLM 全局归纳给出的主题名；为空时回退到 project/topics 推导
+  displayName?: string;
   sessions: { row: ActivitySession; ocrSnippets: string[]; browserVisits: any[]; windowTitles: string[] }[];
   entities: Record<string, any[]>;
   topics: string[];
@@ -200,8 +234,14 @@ export class ActivitySummarizer {
       .slice(0, 5)
       .map(([app, ms]) => ({ app, minutes: Math.round(ms / 60000) }));
 
-    // 4. 执行 Jaccard 相似度聚类
-    const clusters = this.clusterSessions(enriched);
+    // 4. 主题聚类
+    // 优先让 LLM 做全局归纳（能看到完整时间线，判断更准）；
+    // 失败或未配置 LLM 时回退到本地 Jaccard 聚类。
+    const globalClusters = await this.generateGlobalThemes(enriched, targetDate).catch((err) => {
+      console.warn("[ActivitySummarizer] 全局主题归纳异常，回退本地聚类:", err);
+      return null;
+    });
+    const clusters = globalClusters ?? this.clusterSessions(enriched);
 
     const reportStats = {
       sessionCount: allSessions.length,
@@ -315,6 +355,175 @@ export class ActivitySummarizer {
       insights,
       generatedAt: Date.now()
     };
+  }
+
+  /** 从模型回复中提取 JSON（容忍前后多余文字、代码块围栏） */
+  private cleanAndParseJSON(raw: string): any {
+    try {
+      const trimmed = String(raw || "").trim();
+      // 去掉 ```json ... ``` 围栏
+      const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/);
+      const body = fenced ? fenced[1] : trimmed;
+      const match = body.match(/\{[\s\S]*\}/);
+      if (match) return JSON.parse(match[0]);
+      return JSON.parse(body);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 全局主题归纳：把全天会话交给 LLM 一次性归并成主题。
+   *
+   * 为什么放在报告阶段而不是分析阶段：
+   *   分析阶段每个会话只看到自己那 3-7 分钟，看不到前后文，
+   *   只能从侧边栏猜项目名（实测把「用 WorkBuddy 写公众号文章」
+   *   误判成 obsidian-wechat-converter）。
+   *   只有报告阶段能拿到完整时间线，看出「连续几小时都在做同一类事」。
+   *
+   * 失败时返回 null，调用方回退到本地 Jaccard 聚类。
+   */
+  private async generateGlobalThemes(
+    sessions: any[],
+    dateKey: string
+  ): Promise<ThemeCluster[] | null> {
+    const apiBase = this.config.reportApiBase || this.config.llmApiBase;
+    const apiKey =
+      this.config.reportApiKey !== undefined ? this.config.reportApiKey : this.config.llmApiKey;
+    const hasLlm = !!apiKey || apiBase.includes("localhost") || apiBase.includes("127.0.0.1");
+    if (!hasLlm || sessions.length === 0) return null;
+
+    // 构造精简清单：给模型足够判断依据，但不塞入全部 OCR 原文
+    const byId = new Map<string, any>();
+    const items = sessions.map((s, i) => {
+      const id = `s${i}`;
+      byId.set(id, s);
+      const d = new Date(s.row.startedAt);
+      const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+      return {
+        id,
+        time: hhmm,
+        minutes: Math.max(1, Math.round((s.row.durationMs || 0) / 60000)),
+        apps: s.row.appNames,
+        title: s.row.analysisTitle || "(无标题)"
+      };
+    });
+
+    // 分批：超过 60 个会话时按时间顺序切块，避免单次 prompt 过大
+    const chunks: any[][] = [];
+    const CHUNK = 60;
+    for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
+
+    const merged = new Map<string, { name: string; ids: string[] }>();
+
+    for (const chunk of chunks) {
+      const prompt = `以下是 ${dateKey} 的会话清单，请归并为若干核心主题。
+
+${JSON.stringify(chunk, null, 2)}`;
+
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 90000);
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+
+        const res = await fetch(`${apiBase.replace(/\/+$/, "")}/chat/completions`, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: this.config.reportModel,
+            messages: [
+              { role: "system", content: OTUS_THEME_SYSTEM_PROMPT },
+              { role: "user", content: prompt }
+            ],
+            temperature: 0.3
+          })
+        }).finally(() => clearTimeout(timeout));
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = (await res.json()) as any;
+        const text = data.choices?.[0]?.message?.content?.trim() || "";
+        const parsed = this.cleanAndParseJSON(text);
+        if (!parsed?.themes || !Array.isArray(parsed.themes)) throw new Error("响应缺少 themes");
+
+        for (const t of parsed.themes) {
+          const name = String(t?.name || "").trim();
+          const ids = Array.isArray(t?.sessionIds) ? t.sessionIds : [];
+          if (!name || ids.length === 0) continue;
+          // 同一主题名跨批次时合并
+          const key = name.toLowerCase();
+          const existing = merged.get(key);
+          if (existing) existing.ids.push(...ids);
+          else merged.set(key, { name, ids: [...ids] });
+        }
+      } catch (err: any) {
+        console.warn(
+          `[ActivitySummarizer] 全局主题归纳失败（${err?.message || err}），回退到本地聚类`
+        );
+        return null;
+      }
+    }
+
+    if (merged.size === 0) return null;
+
+    // 校验：LLM 只能使用给定编号，且每个编号只能出现一次
+    const assigned = new Set<string>();
+    const clusters: ThemeCluster[] = [];
+    for (const { name, ids } of merged.values()) {
+      const members: any[] = [];
+      for (const id of ids) {
+        const s = byId.get(id);
+        if (!s || assigned.has(id)) continue;
+        assigned.add(id);
+        members.push(s);
+      }
+      if (members.length === 0) continue;
+      const entities: Record<string, any[]> = {};
+      let totalMs = 0;
+      const topics: string[] = [];
+      for (const m of members) {
+        this.mergeEntities(entities, m.row.entities);
+        totalMs += m.row.durationMs || 0;
+        for (const t of m.row.topics || []) if (!topics.includes(t)) topics.push(t);
+      }
+      clusters.push({
+        key: `theme:${name.toLowerCase()}`,
+        project: null,
+        sessions: members,
+        entities,
+        topics,
+        totalMs,
+        displayName: name
+      } as ThemeCluster);
+    }
+
+    // 未分配到的会话（模型漏掉的）补一个「其他」主题，避免丢数据
+    const leftovers = sessions.filter((s, i) => !assigned.has(`s${i}`));
+    if (leftovers.length > 0) {
+      const entities: Record<string, any[]> = {};
+      let totalMs = 0;
+      const topics: string[] = [];
+      for (const m of leftovers) {
+        this.mergeEntities(entities, m.row.entities);
+        totalMs += m.row.durationMs || 0;
+        for (const t of m.row.topics || []) if (!topics.includes(t)) topics.push(t);
+      }
+      clusters.push({
+        key: "theme:其他零碎",
+        project: null,
+        sessions: leftovers,
+        entities,
+        topics,
+        totalMs,
+        displayName: "其他零碎"
+      } as ThemeCluster);
+    }
+
+    console.log(
+      `[ActivitySummarizer] 全局主题归纳完成：${sessions.length} 个会话 → ${clusters.length} 个主题`
+    );
+    return clusters;
   }
 
   // 原生 Jaccard 相似度聚类算法
@@ -561,7 +770,12 @@ export class ActivitySummarizer {
     });
 
     for (const c of sorted) {
-      const themeTitle = c.key === "misc" ? "其他零碎" : c.project || c.topics[0] || c.sessions[0]?.row.analysisTitle || "日常专注";
+      // 优先使用全局归纳给出的主题名；否则回退到 project/topics/标题推导
+      const themeTitle =
+        c.displayName ||
+        (c.key === "misc"
+          ? "其他零碎"
+          : c.project || c.topics[0] || c.sessions[0]?.row.analysisTitle || "日常专注");
       const totalMin = Math.round(c.totalMs / 60000);
       const sessCount = c.sessions.length;
 
