@@ -234,6 +234,67 @@ export class ActivityStore {
     return row ? this.mapSessionRow(row) : null;
   }
 
+  /**
+   * 把一个会话合并进另一个会话（对齐 Alma 的 mergeSessionInto）。
+   *
+   * 用途：分析前的相邻碎片聚合。碎片是采集层的正常产物，
+   * 但逐个送进 LLM 会得到「同一件事被拆成几十条」的失真报告。
+   *
+   * @param sourceId 被合并掉的会话（会被删除）
+   * @param targetId 保留的目标会话
+   * @returns 是否执行了合并
+   */
+  public mergeSessionInto(sourceId: string, targetId: string): boolean {
+    if (sourceId === targetId) return false;
+    const source = this.getSession(sourceId);
+    const target = this.getSession(targetId);
+    if (!source || !target) return false;
+    // 只允许合并尚未分析的会话，避免破坏已有分析结果
+    if (source.analysisStatus !== "pending" || target.analysisStatus !== "pending") return false;
+
+    const now = Date.now();
+    const mergedStart = Math.min(target.startedAt, source.startedAt);
+    const mergedEnd = Math.max(
+      target.endedAt ?? target.startedAt,
+      source.endedAt ?? source.startedAt
+    );
+    const mergedApps = [...new Set([...target.appNames, ...source.appNames])];
+
+    // 1. 关联数据改挂到目标会话
+    this.db.prepare(`UPDATE activity_events SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+    this.db.prepare(`UPDATE activity_snapshots SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+    this.db.prepare(`UPDATE activity_ocr_frames SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+
+    // 2. 重算目标会话的聚合字段
+    const eventCount = (this.db.prepare(
+      `SELECT COUNT(*) AS c FROM activity_events WHERE session_id = ?`
+    ).get(targetId) as any)?.c ?? 0;
+    const snapStats = this.db.prepare(
+      `SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes), 0) AS bytes FROM activity_snapshots WHERE session_id = ?`
+    ).get(targetId) as any;
+
+    this.db.prepare(`
+      UPDATE activity_sessions
+      SET started_at = ?, ended_at = ?, duration_ms = ?, app_names = ?,
+          event_count = ?, snapshot_count = ?, total_bytes = ?, updated_at = ?
+      WHERE id = ?
+    `).run(
+      mergedStart,
+      mergedEnd,
+      mergedEnd - mergedStart,
+      JSON.stringify(mergedApps),
+      eventCount,
+      snapStats?.c ?? 0,
+      snapStats?.bytes ?? 0,
+      now,
+      targetId
+    );
+
+    // 3. 删除被合并的会话
+    this.db.prepare(`DELETE FROM activity_sessions WHERE id = ?`).run(sourceId);
+    return true;
+  }
+
   public closeSession(id: string, endedAt: number = Date.now()): void {
     const session = this.getSession(id);
     if (!session) return;

@@ -37,6 +37,9 @@ export interface OtusConfig {
   ocrLanguages: string[];
   ocrEveryN: number;
 
+  // 分析前的相邻会话合并窗口（毫秒）：间隔小于该值且共享 App 的碎片会被合并
+  mergeGapMs: number;
+
   // 截图压缩配置 (1280 宽度 + 40 质量，体积缩减 98%)
   snapshotMaxWidth: number;
   snapshotQuality: number;
@@ -84,6 +87,7 @@ export const baseConfig: OtusConfig = {
   ],
   ocrLanguages: ["zh-Hans", "en-US"],
   ocrEveryN: 3,                   // 每 3 张快照才执行一次 OCR（对齐 Alma，降低 Vision 开销）
+  mergeGapMs: 300000,             // 5 分钟内的相邻同类会话在分析前合并（对齐 Alma）
 
   // 截图压缩默认参数 (1280 宽度 + 40 质量)
   snapshotMaxWidth: 1280,
@@ -158,6 +162,8 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     histogramChangeThreshold: clampFloat(cfg.histogramChangeThreshold, 0.05, 0.001, 0.5),
     pixelDiffThreshold: clampFloat(cfg.pixelDiffThreshold, 0.02, 0.001, 0.5),
     pixelTolerance: roundTo(cfg.pixelTolerance, 30, 0, 255),
+    // 合并窗口：过小则形同虚设，过大可能把不相关工作拼在一起
+    mergeGapMs: roundTo(cfg.mergeGapMs, 300000, 60000, 1800000),
   };
 }
 

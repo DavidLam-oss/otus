@@ -89,6 +89,14 @@ export class ActivityAnalyzer {
 
     const limit = opts.limit ?? 20;
     try {
+      // 0. 分析前先合并相邻碎片会话（对齐 Alma 的 mergePendingAdjacent）
+      // 采集层按 idleThresholdMs 切出的碎片本身是正常的，但逐个送进 LLM
+      // 会得到「同一件事被拆成几十条」的失真报告，必须先聚合。
+      const merged = this.mergePendingAdjacent();
+      if (merged > 0) {
+        console.log(`[ActivityAnalyzer] 合并了 ${merged} 组相邻碎片会话`);
+      }
+
       // 优先获取 pending 状态的会话；若未达到 limit，则补充分派失败 (failed) 的会话重新分析
       let targets = this.store.listSessions({ analysisStatus: "pending", limit });
 
@@ -134,6 +142,45 @@ export class ActivityAnalyzer {
     }
 
     return { processed, analyzed, failed };
+  }
+
+  /**
+   * 合并相邻的待分析碎片会话（对齐 Alma 的 mergePendingAdjacent）。
+   *
+   * 判定条件（需同时满足）：
+   *   1. 两个会话都已结束
+   *   2. 间隔 < mergeGapMs（默认 5 分钟）
+   *   3. 至少有一个共同使用的 App（避免把「看网页」和「写代码」拼在一起）
+   *
+   * 合并方向：后一个会话并入前一个，保留时间轴上更早的作为主体。
+   */
+  public mergePendingAdjacent(): number {
+    const list = this.store
+      .listSessions({ analysisStatus: "pending", limit: 200 })
+      .filter((s) => s.endedAt !== null)
+      .sort((a, b) => a.startedAt - b.startedAt);
+
+    let merged = 0;
+    for (let i = 0; i < list.length - 1; i++) {
+      const prev = list[i];
+      const next = list[i + 1];
+      const gap = next.startedAt - (prev.endedAt ?? prev.startedAt);
+      // 间隔为负说明时间重叠，不做合并；超出合并窗口也不合并
+      if (gap < 0 || gap > this.config.mergeGapMs) continue;
+      // 两者都记录了 App 且完全没有交集时，视为不同活动，不合并
+      const hasCommonApp =
+        prev.appNames.length === 0 ||
+        next.appNames.length === 0 ||
+        prev.appNames.some((a) => next.appNames.includes(a));
+      if (!hasCommonApp) continue;
+
+      if (this.store.mergeSessionInto(next.id, prev.id)) {
+        merged++;
+        list.splice(i + 1, 1);
+        i--; // 合并后当前位置可能继续与下一个会话相邻
+      }
+    }
+    return merged;
   }
 
   /** 是否配置了可用的 LLM（用于决定是否重试离线启发式会话） */
