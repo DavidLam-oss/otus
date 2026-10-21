@@ -27,6 +27,13 @@ const OTUS_ANALYZER_SYSTEM_PROMPT = `你是一个桌面个人活动记录器的�
      - 仅在谈论/检索某个项目，没有对其产物进行任何修改
    - 例：用 Obsidian 写一篇关于 WorkBuddy 的公众号文章 → project 为 null，不是 obsidian-wechat-converter
    - 例：在 Chrome 打开 obsidian-wechat-converter 的 Issue #83 并改动其代码 → project 为 obsidian-wechat-converter
+   - 特别注意：应用侧边栏/工作区列表/历史任务里出现某个项目名，**不算**操作了该项目。
+     只有当项目名与其具体产物（文件路径、代码、Issue 正文、git 命令）同时出现时才算。
+6. project_evidence 字段（用于事后核查，必须严格遵守）：
+   - 若 project 非 null，必须从输入中**逐字复制**一段能证明「正在操作该项目」的原文，
+     例如 "/Users/davidlin/WorkBuddy/测试" 或 "src/recorder.ts" 或 "Issue #83"。
+   - 禁止改写、概括、翻译或自行编造这段证据，必须是输入中真实存在的连续文本片段。
+   - 若找不到这样的原文证据，则 project 必须填 null，project_evidence 也填 null。
 
 输出的 JSON 格式规范：
 {
@@ -34,6 +41,7 @@ const OTUS_ANALYZER_SYSTEM_PROMPT = `你是一个桌面个人活动记录器的�
   "title": string,                     // 极简中文短语 (<= 30 字)，直击核心折腾内容
   "description": string,               // 1-2 句紧凑中文 (<= 120 字)，概括实际操作与关键产出
   "project": string | null,            // 仅当明确操作了该项目自身的产物时才填 slug，否则 null（见规则 5）
+  "project_evidence": string | null,   // 逐字复制的证据原文；project 为 null 时也填 null（见规则 6）
   "topics": string[],                  // 2-4 个精炼主题标签（如 ["发布", "eslint", "样式调试"]）
   "highlights": string[],              // 1-3 条具体行动/产出的中文要点 (<= 60 字/条)
   "entities": {
@@ -241,6 +249,61 @@ export class ActivityAnalyzer {
     return merged;
   }
 
+  /**
+   * 校验 LLM 给出的 project 是否有真实证据支撑。
+   *
+   * 做法：要求模型逐字复制一段原文（project_evidence），
+   * 然后在本会话的 OCR / 浏览器访问 / App 列表中查找该片段。
+   * 找不到就判定为「无证据」，project 降级为 null。
+   *
+   * 为什么需要：模型会把应用侧边栏、工作区列表、历史任务标题里出现的
+   * 项目名误认为「正在操作该项目」，纯提示词约束无法可靠阻止。
+   */
+  private verifyProjectEvidence(
+    parsed: any,
+    ctx: { ocrSnippets: string[]; browserVisits: { url: string; title: string }[]; appsUsed: string[] }
+  ): string | null {
+    const claimed = typeof parsed.project === "string" ? parsed.project.trim() : "";
+    if (!claimed) return null;
+
+    const evidence = typeof parsed.project_evidence === "string" ? parsed.project_evidence.trim() : "";
+
+    // 1. 没有提供证据 → 不接受该 project
+    if (!evidence) {
+      console.warn(`[ActivityAnalyzer] project="${claimed}" 未提供 project_evidence，已降级为 null`);
+      return null;
+    }
+
+    const norm = (s: string) => s.replace(/\s+/g, "");
+
+    // 2. 证据过短（如只有项目名本身）不足以证明操作，视为无效
+    if (norm(evidence).length < 3 || norm(evidence) === norm(claimed)) {
+      console.warn(
+        `[ActivityAnalyzer] project="${claimed}" 的 evidence 仅为项目名或过短，不足以证明操作行为，已降级为 null`
+      );
+      return null;
+    }
+
+    // 3. 证据必须能在真实输入中找到（忽略空白差异）
+    const haystack = norm(
+      [
+        ...ctx.ocrSnippets,
+        ...ctx.browserVisits.map((v) => `${v.url} ${v.title}`),
+        ...ctx.appsUsed
+      ].join("\n")
+    );
+    const needle = norm(evidence);
+
+    if (!haystack.includes(needle)) {
+      console.warn(
+        `[ActivityAnalyzer] project="${claimed}" 的 evidence 无法在输入中定位（"${evidence.slice(0, 60)}"），已降级为 null`
+      );
+      return null;
+    }
+
+    return claimed;
+  }
+
   /** 是否配置了可用的 LLM（用于决定是否重试离线启发式会话） */
   private hasLlmConfigured(): boolean {
     const apiBase = this.config.analysisApiBase || this.config.llmApiBase;
@@ -382,6 +445,15 @@ export class ActivityAnalyzer {
         return this.applyOfflineHeuristic(session, ocrSnippets, "Invalid JSON from LLM");
       }
 
+      // 校验 project 证据：要求 LLM 给出的原文片段真实存在于本次输入中。
+      // 背景：模型会把侧边栏/工作区列表里出现的项目名误当成「正在操作该项目」。
+      // 仅靠提示词约束不住，必须用可验证的原文做二次确认。
+      const project = this.verifyProjectEvidence(parsed, {
+        ocrSnippets,
+        browserVisits,
+        appsUsed: session.appNames
+      });
+
       if (!parsed.worth) {
         this.store.setSessionAnalysis(session.id, {
           status: "not_worth",
@@ -393,7 +465,7 @@ export class ActivityAnalyzer {
           isMeeting: !!parsed.isMeeting,
           entities: this.normalizeEntities(parsed.entities),
           topics: Array.isArray(parsed.topics) ? parsed.topics : [],
-          project: parsed.project || null,
+          project,
           highlights: Array.isArray(parsed.highlights) ? parsed.highlights : []
         });
         return "not_worth";
@@ -409,7 +481,7 @@ export class ActivityAnalyzer {
         isMeeting: !!parsed.isMeeting,
         entities: this.normalizeEntities(parsed.entities),
         topics: Array.isArray(parsed.topics) ? parsed.topics : [],
-        project: parsed.project || null,
+        project,
         highlights: Array.isArray(parsed.highlights) ? parsed.highlights : []
       });
 
