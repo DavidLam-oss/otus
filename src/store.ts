@@ -248,7 +248,7 @@ export class ActivityStore {
     `).run(end, durationMs, now, id);
   }
 
-  public listSessions(opts: { since?: number; until?: number; limit?: number; analysisStatus?: string | string[] } = {}): ActivitySession[] {
+  public listSessions(opts: { since?: number; until?: number; limit?: number; analysisStatus?: string | string[]; analysisModel?: string } = {}): ActivitySession[] {
     const clauses: string[] = [];
     const params: any[] = [];
 
@@ -271,6 +271,10 @@ export class ActivityStore {
         clauses.push("analysis_status = ?");
         params.push(opts.analysisStatus);
       }
+    }
+    if (opts.analysisModel) {
+      clauses.push("analysis_model = ?");
+      params.push(opts.analysisModel);
     }
 
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";

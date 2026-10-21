@@ -21,6 +21,21 @@ function resolveDateKey(input?: string): string | undefined {
     d.setDate(d.getDate() - 1);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
   }
+  if (input === "today" || input === "td") {
+    return getLocalDateKey();
+  }
+  // 严格校验 YYYY-MM-DD，避免 "--force" 等 flag 被当作日期写入数据库
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(input)) {
+    console.warn(`[Otus] 忽略非法日期参数 "${input}"，回退到今日。`);
+    return undefined;
+  }
+  // 校验日期真实存在（拒绝 2026-02-31 这类）
+  const [y, m, d] = input.split("-").map(Number);
+  const probe = new Date(y, m - 1, d);
+  if (probe.getFullYear() !== y || probe.getMonth() !== m - 1 || probe.getDate() !== d) {
+    console.warn(`[Otus] 日期 "${input}" 不存在，回退到今日。`);
+    return undefined;
+  }
   return input;
 }
 

@@ -91,6 +91,24 @@ export class ActivityAnalyzer {
     try {
       // 优先获取 pending 状态的会话；若未达到 limit，则补充分派失败 (failed) 的会话重新分析
       let targets = this.store.listSessions({ analysisStatus: "pending", limit });
+
+      // 其次补充离线启发式兜底的会话：这些会话虽标记为 analyzed，
+      // 但标题/描述由本地规则生成（质量低），在 LLM 恢复后应重新分析。
+      // 仅当配置了可用的 LLM 时才纳入，避免无 LLM 时反复重跑同一批会话。
+      if (targets.length < limit && this.hasLlmConfigured()) {
+        const offlineSessions = this.store.listSessions({
+          analysisStatus: "analyzed",
+          analysisModel: "offline-heuristic",
+          limit: limit - targets.length
+        });
+        if (offlineSessions.length > 0) {
+          console.log(
+            `[ActivityAnalyzer] 重新分析 ${offlineSessions.length} 个离线启发式会话（LLM 已可用）`
+          );
+          targets = [...targets, ...offlineSessions];
+        }
+      }
+
       if (opts.includeFailed !== false && targets.length < limit) {
         const failedSessions = this.store.listSessions({
           analysisStatus: "failed",
@@ -116,6 +134,14 @@ export class ActivityAnalyzer {
     }
 
     return { processed, analyzed, failed };
+  }
+
+  /** 是否配置了可用的 LLM（用于决定是否重试离线启发式会话） */
+  private hasLlmConfigured(): boolean {
+    const apiBase = this.config.analysisApiBase || this.config.llmApiBase;
+    const apiKey =
+      this.config.analysisApiKey !== undefined ? this.config.analysisApiKey : this.config.llmApiKey;
+    return !!apiKey || apiBase.includes("localhost") || apiBase.includes("127.0.0.1");
   }
 
   public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "failed"> {
