@@ -35,6 +35,7 @@ export interface OtusConfig {
 
   sensitiveApps: string[];
   ocrLanguages: string[];
+  ocrEveryN: number;
 
   // 截图压缩配置 (1280 宽度 + 40 质量，体积缩减 98%)
   snapshotMaxWidth: number;
@@ -62,12 +63,12 @@ export const baseConfig: OtusConfig = {
   maxStorageBytes: 10 * 1024 * 1024 * 1024, // 10GB 磁盘存储硬上限，达到自动 FIFO 轮转清理旧截图
 
   enableInputMonitor: true,
-  snapshotDebounceMs: 1000,
-  typingPauseMs: 1500,
-  idleThresholdMs: 30000,         // 30s 闲置自动切分会话
-  heartbeatIntervalMs: 30000,     // 30s 心跳抓拍
-  visualCheckIntervalMs: 10000,   // 10s 画面差分检测
-  browserPollIntervalMs: 5000,    // 5s 浏览器穿透检测
+  snapshotDebounceMs: 4000,       // 4s 抓拍防抖（对齐 Alma，原 1000ms 过密）
+  typingPauseMs: 1200,
+  idleThresholdMs: 30000,         // 30s 闲置自动切分会话（与 Alma 一致）
+  heartbeatIntervalMs: 120000,    // 2min 心跳抓拍（对齐 Alma，原 30s 过密）
+  visualCheckIntervalMs: 12000,   // 12s 画面差分检测（对齐 Alma）
+  browserPollIntervalMs: 12000,   // 12s 浏览器穿透检测（对齐 Alma，原 5s 过密）
 
   sensitiveApps: [
     "com.agilebits.onepassword",
@@ -77,6 +78,7 @@ export const baseConfig: OtusConfig = {
     "com.apple.keychainaccess"
   ],
   ocrLanguages: ["zh-Hans", "en-US"],
+  ocrEveryN: 3,                   // 每 3 张快照才执行一次 OCR（对齐 Alma，降低 Vision 开销）
 
   // 截图压缩默认参数 (1280 宽度 + 40 质量)
   snapshotMaxWidth: 1280,
@@ -109,9 +111,39 @@ export function saveUserConfig(updates: Partial<OtusConfig>): OtusConfig {
   return getEffectiveConfig();
 }
 
+/**
+ * 配置项范围钳制（对齐 Alma 的 bG() 实现）。
+ * 用户手写 ~/.otus/config.json 时可能填入 0、负数或非法值，
+ * 若不加护栏会导致「每个周期都切分会话」这类灾难性行为。
+ */
+function clampConfig(cfg: OtusConfig): OtusConfig {
+  // 非有限数或 <= 0 时回退到 fallback；否则取 max(fallback, value)
+  const atLeast = (value: number | undefined, fallback: number): number =>
+    !Number.isFinite(value) || (value as number) <= 0 ? fallback : Math.max(fallback, value as number);
+
+  const roundTo = (value: number | undefined, fallback: number, min: number, max: number): number => {
+    const n = Math.round(value as number);
+    return !Number.isFinite(n) || n <= 0 ? fallback : Math.min(max, Math.max(min, n));
+  };
+
+  return {
+    ...cfg,
+    snapshotDebounceMs: atLeast(cfg.snapshotDebounceMs, 3000),
+    heartbeatIntervalMs: atLeast(cfg.heartbeatIntervalMs, 60000),
+    typingPauseMs: atLeast(cfg.typingPauseMs, 800),
+    idleThresholdMs: atLeast(cfg.idleThresholdMs, 15000),
+    visualCheckIntervalMs: atLeast(cfg.visualCheckIntervalMs, 10000),
+    browserPollIntervalMs: atLeast(cfg.browserPollIntervalMs, 10000),
+    ocrEveryN: roundTo(cfg.ocrEveryN, 1, 1, 10),
+    snapshotQuality: roundTo(cfg.snapshotQuality, 40, 30, 95),
+    snapshotMaxWidth: roundTo(cfg.snapshotMaxWidth, 1280, 320, 3840),
+    maxStorageBytes: atLeast(cfg.maxStorageBytes, 512 * 1024 * 1024),
+  };
+}
+
 export function getEffectiveConfig(): OtusConfig {
   const user = loadUserConfig();
-  return {
+  return clampConfig({
     ...baseConfig,
     ...user,
     // 环境变量优先级最高
@@ -123,7 +155,7 @@ export function getEffectiveConfig(): OtusConfig {
     analysisApiKey: process.env.OTUS_ANALYSIS_KEY || user.analysisApiKey || undefined,
     reportApiBase: process.env.OTUS_REPORT_URL || user.reportApiBase || undefined,
     reportApiKey: process.env.OTUS_REPORT_KEY || user.reportApiKey || undefined,
-  };
+  });
 }
 
 export const defaultConfig: OtusConfig = getEffectiveConfig();

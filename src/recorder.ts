@@ -36,6 +36,26 @@ export class ActivityRecorderService {
   private prevHashHex: string | null = null;
   private prevSnapshotPath: string | null = null;
 
+  // 浏览器访问三元组去重：app + url + title 均未变化时不重复记录
+  private lastBrowserVisit: { app: string; url: string; title: string } | null = null;
+
+  // 截屏并发锁：防止慢速截屏期间重复进入
+  private captureInFlight: boolean = false;
+
+  // 浏览器轮询连续失败计数，达到阈值后自禁用该 App 的轮询
+  private browserPollFailures: Map<string, number> = new Map();
+  private browserPollDisabled: Set<string> = new Set();
+
+  // OCR 降频：每 N 张快照才执行一次识别
+  private snapshotsSinceLastOcr: number = 0;
+
+  // 闲置降频：连续跳过的次数
+  private visualIdleTicks: number = 0;
+
+  // 截屏失败退避：连续失败时指数延长重试间隔，避免 screencapture 报错刷屏
+  private captureFailures: number = 0;
+  private captureNextAllowedAt: number = 0;
+
   // Swift Helper Processes
   private inputMonitorProc: ChildProcess | null = null;
   private browserTabProc: ChildProcess | null = null;
@@ -83,19 +103,30 @@ export class ActivityRecorderService {
       );
     }, this.config.heartbeatIntervalMs);
 
-    // 5. 定时画面差分检测 (10s)
+    // 5. 定时画面差分检测
+    // 闲置降频：长时间无输入时逐步降低检测频率（1x → 5x），避免空转采样
     if (this.config.visualCheckIntervalMs > 0) {
       this.visualTimer = setInterval(() => {
         const now = Date.now();
-        if (now - this.lastCaptureAttemptAt >= this.config.visualCheckIntervalMs) {
-          this.maybeCapture("visual_change", { dedupOnly: true }).catch((err) =>
-            console.error("[ActivityRecorder] Visual change capture error:", err)
-          );
+        if (now - this.lastCaptureAttemptAt < this.config.visualCheckIntervalMs) {
+          this.visualIdleTicks = 0;
+          return;
         }
+        const idleMs = now - this.lastInputAt;
+        if (idleMs > this.config.idleThresholdMs) {
+          this.visualIdleTicks++;
+          const skipEvery = Math.min(5, 1 + Math.floor(idleMs / (4 * this.config.visualCheckIntervalMs)));
+          if (this.visualIdleTicks % skipEvery !== 0) return;
+        } else {
+          this.visualIdleTicks = 0;
+        }
+        this.maybeCapture("visual_change", { dedupOnly: true }).catch((err) =>
+          console.error("[ActivityRecorder] Visual change capture error:", err)
+        );
       }, this.config.visualCheckIntervalMs);
     }
 
-    // 6. 浏览器活动轮询 (5s)
+    // 6. 浏览器活动轮询
     if (this.config.browserPollIntervalMs > 0) {
       this.browserPollTimer = setInterval(() => {
         this.pollBrowserVisit().catch((err) =>
@@ -364,7 +395,14 @@ export class ActivityRecorderService {
   // 抓拍与 OCR 执行
   public async maybeCapture(trigger: string, opts: { dedupOnly?: boolean } = {}): Promise<void> {
     if (!this.isRunning || this.screenLocked || this.isSensitiveAppFocused()) return;
+    // 并发锁：screencapture 同步阻塞期间不允许重入
+    if (this.captureInFlight) return;
+    // 失败退避：连续失败时按指数拉长重试间隔（500ms 起，封顶 30s）
+    if (Date.now() < this.captureNextAllowedAt) return;
+    // 防抖：距上次尝试不足 snapshotDebounceMs 时跳过（心跳周期由定时器保证，不受此限）
+    if (trigger !== "heartbeat" && Date.now() - this.lastCaptureAttemptAt < this.config.snapshotDebounceMs) return;
 
+    this.captureInFlight = true;
     this.lastCaptureAttemptAt = Date.now();
     const session = this.ensureSession(trigger);
     const dateKey = getLocalDateKey();
@@ -392,16 +430,24 @@ export class ActivityRecorderService {
       }
 
       // 2. 图像哈希判重 (避免连续多张一模一样的静止帧)
+      // 心跳抓拍豁免：即使画面完全静止也保留快照，确保心跳会话不会退化为 0 快照空壳
+      const isHeartbeat = trigger === "heartbeat";
       const fileBuf = fs.readFileSync(tmpPath);
       const hashHex = crypto.createHash("md5").update(fileBuf).digest("hex");
-      if (this.prevHashHex === hashHex) {
+      if (!isHeartbeat && this.prevHashHex === hashHex) {
         fs.unlinkSync(tmpPath);
         return;
       }
 
       // 2.1 原生直方图差分过滤 (32-bin 归一化灰度直方图 + 巴氏距离比对)
       // 若画面变动 < 5% (如右下角时钟跳动、输入框光标闪烁)，判定为重复静止帧直接丢弃，彻底消除冗余快照与无谓 OCR
-      if (this.prevSnapshotPath && fs.existsSync(this.prevSnapshotPath) && fs.existsSync(this.imgDiffBinPath)) {
+      // 同样豁免心跳触发
+      if (
+        !isHeartbeat &&
+        this.prevSnapshotPath &&
+        fs.existsSync(this.prevSnapshotPath) &&
+        fs.existsSync(this.imgDiffBinPath)
+      ) {
         try {
           // otus-diff 退出码 0 代表画面高度相似 (duplicate)，退出码 1 代表有显著画面变化 (changed)
           execSync(`"${this.imgDiffBinPath}" "${this.prevSnapshotPath}" "${tmpPath}" 0.05`, { stdio: "pipe" });
@@ -430,13 +476,43 @@ export class ActivityRecorderService {
         hashHex
       });
 
-      // 5. 调用 Apple Vision OCR (异步识别)
-      this.runOcr(snapId, session.id, finalPath);
+      // 5. OCR 降频：每 ocrEveryN 张才识别一次，降低 Apple Vision 开销
+      this.snapshotsSinceLastOcr++;
+      const ocrEveryN = Math.max(1, this.config.ocrEveryN || 1);
+      if (ocrEveryN === 1 || this.snapshotsSinceLastOcr >= ocrEveryN) {
+        this.snapshotsSinceLastOcr = 0;
+        this.runOcr(snapId, session.id, finalPath);
+      }
+
+      // 成功一次即清零退避
+      if (this.captureFailures > 0) {
+        console.log(`[ActivityRecorder] 截图恢复正常（此前连续失败 ${this.captureFailures} 次）`);
+      }
+      this.captureFailures = 0;
+      this.captureNextAllowedAt = 0;
     } catch (err) {
       if (fs.existsSync(tmpPath)) {
         try { fs.unlinkSync(tmpPath); } catch {}
       }
-      console.error("[ActivityRecorder] screencapture failed:", err);
+      // 指数退避：500ms * 2^(n-1)，封顶 30s，最多累计 16 次
+      this.captureFailures = Math.min(this.captureFailures + 1, 16);
+      const backoffMs = Math.min(30000, 500 * Math.pow(2, this.captureFailures - 1));
+      this.captureNextAllowedAt = Date.now() + backoffMs;
+      // 前 3 次打印完整错误，之后降噪为单行摘要
+      if (this.captureFailures <= 3) {
+        console.error(
+          `[ActivityRecorder] screencapture failed (${this.captureFailures}/16)，${backoffMs}ms 后重试：`,
+          err
+        );
+      } else if (this.captureFailures === 4) {
+        console.error(
+          `[ActivityRecorder] 截图持续失败，已进入退避模式（后续仅每 16 次失败时提示一次）。`
+        );
+      } else if (this.captureFailures % 16 === 0) {
+        console.error(`[ActivityRecorder] 截图仍失败（累计 ${this.captureFailures} 次）。`);
+      }
+    } finally {
+      this.captureInFlight = false;
     }
   }
 
@@ -484,6 +560,8 @@ export class ActivityRecorderService {
     if (!browserNames.some((b) => this.frontmost.appName.toLowerCase().includes(b.toLowerCase()))) {
       return;
     }
+    // 该浏览器已因连续失败被停用
+    if (this.browserPollDisabled.has(this.frontmost.appName)) return;
 
     const script = `
       tell application "${this.frontmost.appName}"
@@ -500,17 +578,53 @@ export class ActivityRecorderService {
         timeout: 1000
       }).trim();
 
+      // 轮询成功，清零失败计数
+      this.browserPollFailures.delete(this.frontmost.appName);
+
       if (out && out.includes("|||")) {
         const [url, title] = out.split("|||");
         if (url && url.startsWith("http")) {
+          const app = this.frontmost.appName;
+          const cleanUrl = url.trim();
+          const cleanTitle = (title || "").trim();
+
+          // 三元组去重：同一 App 的同一 URL + 同一标题视为持续停留，不重复记录
+          const last = this.lastBrowserVisit;
+          if (last && last.app === app && last.url === cleanUrl && last.title === cleanTitle) {
+            return;
+          }
+          this.lastBrowserVisit = { app, url: cleanUrl, title: cleanTitle };
+
+          const now = Date.now();
           this.store.insertEvent(this.currentSession.id, {
-            timestamp: Date.now(),
+            timestamp: now,
             kind: "browser_visit",
-            appName: this.frontmost.appName,
-            data: { url: url.trim(), title: (title || "").trim() }
+            appName: app,
+            data: { url: cleanUrl, title: cleanTitle }
           });
+
+          // 同步记录窗口标题，便于后续分析获取窗口上下文
+          if (cleanTitle) {
+            this.store.insertEvent(this.currentSession.id, {
+              timestamp: now,
+              kind: "window_title",
+              appName: app,
+              data: { title: cleanTitle, source: "browser" }
+            });
+          }
         }
       }
-    } catch {}
+    } catch (err: any) {
+      // 连续失败 3 次的 App 自禁用轮询，避免反复报错刷屏（如浏览器未启动或权限缺失）
+      const app = this.frontmost.appName;
+      const failures = (this.browserPollFailures.get(app) ?? 0) + 1;
+      this.browserPollFailures.set(app, failures);
+      if (failures >= 3) {
+        this.browserPollDisabled.add(app);
+        console.warn(
+          `[ActivityRecorder] 浏览器轮询已对 ${app} 停用（连续失败 ${failures} 次）：${String(err?.message || err).slice(0, 160)}`
+        );
+      }
+    }
   }
 }
