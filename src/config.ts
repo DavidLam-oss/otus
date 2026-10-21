@@ -41,6 +41,11 @@ export interface OtusConfig {
   snapshotMaxWidth: number;
   snapshotQuality: number;
 
+  // 三级图像判重参数（对齐 Alma）
+  histogramChangeThreshold: number;
+  pixelDiffThreshold: number;
+  pixelTolerance: number;
+
   // LLM Config
   llmApiBase: string;
   llmApiKey: string;
@@ -84,6 +89,11 @@ export const baseConfig: OtusConfig = {
   snapshotMaxWidth: 1280,
   snapshotQuality: 40,
 
+  // 三级图像判重默认参数（对齐 Alma v0.4.193）
+  histogramChangeThreshold: 0.05, // 32-bin 直方图巴氏距离阈值
+  pixelDiffThreshold: 0.02,       // 像素差异比例阈值（变动 < 2% 视为重复）
+  pixelTolerance: 30,             // 单像素灰度容差
+
   // 默认对齐本地 Magpie 网关，用户无 Magpie 时可通过 ~/.otus/config.json 或环境变量覆盖为任意 OpenAI 兼容服务
   llmApiBase: "http://127.0.0.1:3425/v1",
   llmApiKey: "magpie-local",
@@ -126,6 +136,12 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     return !Number.isFinite(n) || n <= 0 ? fallback : Math.min(max, Math.max(min, n));
   };
 
+  // 浮点参数钳制（用于 0~1 的阈值）
+  const clampFloat = (value: number | undefined, fallback: number, min: number, max: number): number => {
+    const n = Number(value);
+    return !Number.isFinite(n) ? fallback : Math.min(max, Math.max(min, n));
+  };
+
   return {
     ...cfg,
     snapshotDebounceMs: atLeast(cfg.snapshotDebounceMs, 3000),
@@ -138,6 +154,10 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     snapshotQuality: roundTo(cfg.snapshotQuality, 40, 30, 95),
     snapshotMaxWidth: roundTo(cfg.snapshotMaxWidth, 1280, 320, 3840),
     maxStorageBytes: atLeast(cfg.maxStorageBytes, 512 * 1024 * 1024),
+    // 判重阈值必须落在合理区间：过小会误丢真实变化，过大会产生大量重复帧
+    histogramChangeThreshold: clampFloat(cfg.histogramChangeThreshold, 0.05, 0.001, 0.5),
+    pixelDiffThreshold: clampFloat(cfg.pixelDiffThreshold, 0.02, 0.001, 0.5),
+    pixelTolerance: roundTo(cfg.pixelTolerance, 30, 0, 255),
   };
 }
 

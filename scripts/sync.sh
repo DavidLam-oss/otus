@@ -12,7 +12,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_SRC="/Applications/Otus.app/Contents/Resources/app/src"
+APP_ROOT="/Applications/Otus.app/Contents/Resources/app"
+APP_SRC="$APP_ROOT/src"
+APP_NATIVE="$APP_ROOT/native"
 PLIST="com.davidlin.otus.plist"
 PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST"
 DRY_RUN=false
@@ -34,19 +36,25 @@ fi
 
 echo "========================================="
 echo " Otus 热更新"
-echo " 源:   $PROJECT_DIR/src"
-echo " 目标: $APP_SRC"
+echo " src:    $PROJECT_DIR/src      → $APP_SRC"
+echo " native: $PROJECT_DIR/native   → $APP_NATIVE"
 echo "========================================="
 
-# 1. 展示差异
+# 1. 展示差异（src 与 native 都要检查：改 .swift 后需重新编译辅助二进制）
 echo ""
 echo "[1/4] 检测变更..."
-CHANGED=$(diff -rq "$PROJECT_DIR/src" "$APP_SRC" 2>/dev/null | grep -v "^Only in $APP_SRC" || true)
-if [[ -z "$CHANGED" ]]; then
+CHANGED_SRC=$(diff -rq "$PROJECT_DIR/src" "$APP_SRC" 2>/dev/null | grep -v "^Only in $APP_SRC" || true)
+CHANGED_NATIVE=""
+if [[ -d "$APP_NATIVE" ]]; then
+  CHANGED_NATIVE=$(diff -rq "$PROJECT_DIR/native" "$APP_NATIVE" 2>/dev/null | grep -v "^Only in $APP_NATIVE" || true)
+fi
+
+if [[ -z "$CHANGED_SRC" && -z "$CHANGED_NATIVE" ]]; then
   echo "  无变更，跳过部署。"
   exit 0
 fi
-echo "$CHANGED" | sed 's/^/  /'
+[[ -n "$CHANGED_SRC" ]] && echo "$CHANGED_SRC" | sed 's/^/  /'
+[[ -n "$CHANGED_NATIVE" ]] && echo "$CHANGED_NATIVE" | sed 's/^/  /'
 
 # 2. 备份
 echo ""
@@ -54,12 +62,18 @@ echo "[2/4] 备份现有文件..."
 BACKUP_DIR="$HOME/.otus/backups/$(date +%Y%m%d-%H%M%S)"
 run "mkdir -p '$BACKUP_DIR'"
 run "cp -R '$APP_SRC' '$BACKUP_DIR/src'"
+[[ -d "$APP_NATIVE" ]] && run "cp -R '$APP_NATIVE' '$BACKUP_DIR/native'"
 echo "  备份至 $BACKUP_DIR"
 
 # 3. 同步
 echo ""
 echo "[3/4] 同步代码..."
-run "rsync -a --delete '$PROJECT_DIR/src/' '$APP_SRC/'"
+[[ -n "$CHANGED_SRC" ]] && run "rsync -a --delete '$PROJECT_DIR/src/' '$APP_SRC/'"
+if [[ -n "$CHANGED_NATIVE" ]]; then
+  run "rsync -a --delete '$PROJECT_DIR/native/' '$APP_NATIVE/'"
+  # .swift 源码比 ~/.otus/bin 下的旧二进制新时，recorder 启动会自动重新编译
+  echo "  native 已更新，辅助二进制将在 daemon 启动时自动重新编译"
+fi
 echo "  完成"
 
 # 4. 重启

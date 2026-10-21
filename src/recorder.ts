@@ -439,9 +439,10 @@ export class ActivityRecorderService {
         return;
       }
 
-      // 2.1 原生直方图差分过滤 (32-bin 归一化灰度直方图 + 巴氏距离比对)
-      // 若画面变动 < 5% (如右下角时钟跳动、输入框光标闪烁)，判定为重复静止帧直接丢弃，彻底消除冗余快照与无谓 OCR
-      // 同样豁免心跳触发
+      // 2.1 原生三级图像差分过滤（对齐 Alma 的 isDuplicate 实现）
+      //   ① 32-bin 归一化灰度直方图 + 巴氏距离：捕捉整体亮度分布变化
+      //   ② 像素级容差比对（160x90 缩略图）：过滤光标闪烁、时钟跳秒、抗锯齿抖动等局部微变
+      // 只有两级都判定为「变化」时才保留快照，同样豁免心跳触发
       if (
         !isHeartbeat &&
         this.prevSnapshotPath &&
@@ -450,7 +451,11 @@ export class ActivityRecorderService {
       ) {
         try {
           // otus-diff 退出码 0 代表画面高度相似 (duplicate)，退出码 1 代表有显著画面变化 (changed)
-          execSync(`"${this.imgDiffBinPath}" "${this.prevSnapshotPath}" "${tmpPath}" 0.05`, { stdio: "pipe" });
+          execSync(
+            `"${this.imgDiffBinPath}" "${this.prevSnapshotPath}" "${tmpPath}" ` +
+              `${this.config.histogramChangeThreshold} ${this.config.pixelDiffThreshold} ${this.config.pixelTolerance}`,
+            { stdio: "pipe" }
+          );
           fs.unlinkSync(tmpPath);
           return;
         } catch {
