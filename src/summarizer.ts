@@ -13,9 +13,13 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
    - 偏好有力的动词：「搞定 / 连发三版 / 踩坑 / 闭环 / 优化 / 重构 / 砍掉」，少用「查看了 / 浏览了 / 打开了」。
 3. 严格的事实边界：
    - 严禁编造任何未在骨架中出现的事实、PR 编号、版本号或项目名。所有 PR、版本号、Commit、人名必须原样保留。
+   - 严禁改写任何数字（分钟数、session 数、百分比、版本号），必须与骨架完全一致。
+   - 严禁新增骨架中不存在的 URL；骨架中的链接必须保留。
 4. 结构规范：
-   - 保持一个一级标题（# YYYY-MM-DD 周X 个人折腾日记），每个核心主题一个二级标题（## 主题名）。
+   - **不要输出一级标题（# 开头的那一行）**，它由程序自动生成，你输出的内容会直接拼在它下面。
+   - 保持每个核心主题一个二级标题（## 主题名），标题下的「_X 分钟 · Y 个 session_」统计行必须保留。
    - 保留骨架中的重点链接与行内代码块。
+   - 输出开头不要有任何前言、说明或代码块标记。
 `;
 
 const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与效能分析专家。根据用户全天的活动骨架与统计数据，以犀利、具体、直击要害的口吻生成 4-6 条高质量的「工作流深度复盘与洞察」卡片。
@@ -77,11 +81,24 @@ export class ActivitySummarizer {
       if (existing && existing.stats && typeof existing.stats.report === "string") {
         if (!isToday) {
           // 历史日期（如昨日）：已有总结直接秒开返回，绝不重复调用大模型
+          // isPartial 必须重算：报告可能是当天生成的（当时 isToday=true 被固化为 partial），
+          // 但到了次日它就是完整的历史报告，不能再标记为「进行中」。
+          const settledPartial = false;
+          if (existing.isPartial !== settledPartial) {
+            this.store.upsertSummary({
+              kind: "daily",
+              dateKey: targetDate,
+              summary: existing.summary,
+              stats: existing.stats,
+              model: existing.model,
+              isPartial: settledPartial
+            });
+          }
           return {
             dateKey: targetDate,
             markdown: existing.stats.report,
             skeleton: existing.stats.skeleton || existing.stats.report,
-            isPartial: existing.isPartial,
+            isPartial: settledPartial,
             stats: existing.stats.reportStats || {},
             insights: existing.stats.insights || [],
             generatedAt: existing.stats.reportGeneratedAt || existing.updatedAt
@@ -156,14 +173,27 @@ export class ActivitySummarizer {
 
     // 3. 统计全天活跃时长与主用应用
     let totalActiveMs = 0;
+    let earliestStart = Number.POSITIVE_INFINITY;
+    let latestEnd = 0;
     const appDurations = new Map<string, number>();
     for (const sess of allSessions) {
       totalActiveMs += sess.durationMs || 0;
+      // 墙钟跨度：从最早会话开始到最晚会话结束
+      const start = sess.startedAt;
+      const end = sess.endedAt || (sess.startedAt + (sess.durationMs || 0));
+      if (start > 0) earliestStart = Math.min(earliestStart, start);
+      if (end > 0) latestEnd = Math.max(latestEnd, end);
       const perApp = this.store.perAppDurationsForSession(sess.id);
       for (const [app, ms] of perApp.entries()) {
         appDurations.set(app, (appDurations.get(app) || 0) + ms);
       }
     }
+
+    // 墙钟跨度与利用率：帮助用户理解「活跃 N 分钟」是有效时长而非在职时长
+    const wallClockMs =
+      Number.isFinite(earliestStart) && latestEnd > earliestStart ? latestEnd - earliestStart : 0;
+    const utilizationPct = wallClockMs > 0 ? Math.round((totalActiveMs / wallClockMs) * 100) : 0;
+    const wallClockHours = Math.round((wallClockMs / 3600000) * 10) / 10;
 
     const topApps = [...appDurations.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -178,6 +208,8 @@ export class ActivitySummarizer {
       analyzedCount: analyzedSessions.length,
       filteredCount: filteredSessions.length,
       totalActiveMinutes: Math.round(totalActiveMs / 60000),
+      wallClockHours,
+      utilizationPct,
       clusterCount: clusters.length,
       topApps
     };
@@ -232,13 +264,29 @@ export class ActivitySummarizer {
     }
 
     // 7. 调用 Narrative Pass 进行第一人称润色
+    //
+    // 关键设计：只把「主题正文」交给 LLM，一级标题与统计行由代码生成后再拼回。
+    // 这样即使 LLM 改坏文风，也动不到日期和统计事实，属于结构性防护。
+    // 在其之上再叠加 validateNarrative() 作为兜底（防止正文里编造链接/编号）。
+    const headerLines = this.buildSkeletonHeader(targetDate, reportStats);
+    const bodySkeleton = skeleton.slice(headerLines.join("\n").length).replace(/^\n+/, "");
+
     let finalMarkdown = skeleton;
     let modelUsed: string | null = null;
     try {
-      const polished = await this.narrativePass(skeleton);
+      const polished = await this.narrativePass(bodySkeleton, targetDate);
       if (polished && polished.length > 80) {
-        finalMarkdown = polished;
-        modelUsed = this.config.reportModel;
+        // 校验对象是「拼回头部后的完整报告」，确保与最终产物一致
+        const assembled = [...headerLines, polished].join("\n").trim();
+        const verdict = this.validateNarrative(skeleton, assembled, targetDate);
+        if (verdict.ok) {
+          finalMarkdown = assembled;
+          modelUsed = this.config.reportModel;
+        } else {
+          console.warn(
+            `[ActivitySummarizer] 润色结果未通过事实校验，已回退到骨架。问题：${verdict.reasons.join("；")}`
+          );
+        }
       }
     } catch (err) {
       console.error("[ActivitySummarizer] Narrative pass failed, falling back to skeleton:", err);
@@ -419,22 +467,44 @@ export class ActivitySummarizer {
     }
   }
 
-  // 原生 Markdown 骨架生成器
-  private buildSkeleton(clusters: ThemeCluster[], dateKey: string, stats: any): string {
+  /**
+   * 生成骨架头部（一级标题 + 全天统计行）。
+   *
+   * 这一部分完全由代码生成，绝不交给 LLM 重写——
+   * 实测 LLM 会把 2026 写成 2025、把统计行整段删掉。
+   * 拆分后 LLM 只负责各主题的段落措辞，从结构上就改不到事实。
+   */
+  private buildSkeletonHeader(dateKey: string, stats: any): string[] {
     const [year, month, day] = dateKey.split("-").map(Number);
-    const dayOfWeek = ["日", "一", "二", "三", "四", "五", "六"][new Date(year, month - 1, day).getDay()];
+    const dayOfWeek = ["日", "一", "二", "三", "四", "五", "六"][
+      new Date(year, month - 1, day).getDay()
+    ];
     const lines: string[] = [];
 
     lines.push(`# ${dateKey} 周${dayOfWeek} 个人折腾日记`);
     lines.push("");
-    const topAppsStr = stats.topApps.length
+
+    const topAppsStr = stats.topApps?.length
       ? ` 主用：${stats.topApps.map((a: any) => `${a.app} (${a.minutes}m)`).join("、")}。`
       : "";
     const filteredStr = stats.filteredCount > 0 ? `，${stats.filteredCount} 个闲置已过滤` : "";
+    // 活跃时长口径说明：totalActiveMinutes 是各会话有效输入时长累加，
+    // 与墙钟跨度（首末会话间隔）不同，单看前者容易高估在岗时间。
+    const spanStr =
+      stats.wallClockHours > 0
+        ? `跨度为 ${stats.wallClockHours} 小时，有效利用率 ${stats.utilizationPct}%`
+        : "";
     lines.push(
-      `活跃 ${stats.totalActiveMinutes} 分钟，共 ${stats.sessionCount} 个 session（${stats.analyzedCount} 个实质折腾${filteredStr}），归类为 ${stats.clusterCount} 个核心主题。${topAppsStr}`
+      `有效活跃 ${stats.totalActiveMinutes} 分钟${spanStr ? `（${spanStr}）` : ""}，共 ${stats.sessionCount} 个 session（${stats.analyzedCount} 个实质折腾${filteredStr}），归类为 ${stats.clusterCount} 个核心主题。${topAppsStr}`
     );
     lines.push("");
+
+    return lines;
+  }
+
+  // 原生 Markdown 骨架生成器
+  private buildSkeleton(clusters: ThemeCluster[], dateKey: string, stats: any): string {
+    const lines: string[] = this.buildSkeletonHeader(dateKey, stats);
 
     // 按重要度排序：有 PR/Issue 的优先，其次按总时长降序
     const sorted = [...clusters].sort((a, b) => {
@@ -520,7 +590,92 @@ export class ActivitySummarizer {
     return parts.join("\n");
   }
 
-  private async narrativePass(skeleton: string): Promise<string> {
+  /**
+   * 校验 LLM 润色结果是否忠实于骨架事实。
+   *
+   * 背景：系统提示词虽已写「严禁编造事实」，但实测 LLM 仍会把 2026 写成 2025、
+   * 整段丢失统计行。提示词是「请求」，确定性校验才是「强制」。
+   *
+   * 任一硬性项失败即判定不可用，调用方应回退到骨架。
+   */
+  private validateNarrative(
+    skeleton: string,
+    polished: string,
+    dateKey: string
+  ): { ok: boolean; reasons: string[] } {
+    const reasons: string[] = [];
+
+    // ── 硬性项 1：一级标题的日期必须一致且出现
+    if (!polished.includes(dateKey)) {
+      reasons.push(`输出中缺少日期 ${dateKey}`);
+    }
+    const otherDates = [...polished.matchAll(/\b(20\d{2}-\d{2}-\d{2})\b/g)]
+      .map((m) => m[1])
+      .filter((d) => d !== dateKey);
+    if (otherDates.length > 0) {
+      reasons.push(`出现与目标日期不符的日期：${[...new Set(otherDates)].slice(0, 3).join("、")}`);
+    }
+    if (!/^#\s+\S/.test(polished.trim())) {
+      reasons.push("缺少一级标题");
+    }
+
+    // ── 硬性项 2：骨架中的 PR / Issue 编号必须原样保留
+    const refPatterns = [/\b(?:PR|pr)\s*#?\d+/g, /\b(?:Issue|issue|#)\s*#?\d+/g, /\bv?\d+\.\d+\.\d+\b/g];
+    const skeletonRefs = new Set<string>();
+    for (const re of refPatterns) {
+      for (const m of skeleton.matchAll(re)) skeletonRefs.add(m[0].replace(/\s+/g, " ").trim());
+    }
+    const missingRefs = [...skeletonRefs].filter((ref) => !polished.includes(ref));
+    if (missingRefs.length > 0) {
+      // 允许最多丢失 20% 的编号（LLM 适度精简），超出则判定失败
+      const lossRatio = missingRefs.length / skeletonRefs.size;
+      if (lossRatio > 0.2) {
+        reasons.push(
+          `丢失 ${missingRefs.length}/${skeletonRefs.size} 个编号引用（如 ${missingRefs.slice(0, 3).join("、")}）`
+        );
+      }
+    }
+
+    // ── 硬性项 3：统计关键数字必须保留
+    const statLine = skeleton.split("\n").find((l) => l.includes("有效活跃") || l.includes("活跃"));
+    if (statLine) {
+      const nums = [...statLine.matchAll(/\d+(?:\.\d+)?/g)].map((m) => m[0]);
+      // 取显著的统计数字（排除过小的序号）
+      const keyNums = nums.filter((n) => Number(n) >= 10).slice(0, 6);
+      const missingNums = keyNums.filter((n) => !polished.includes(n));
+      if (missingNums.length > Math.max(1, Math.floor(keyNums.length / 2))) {
+        reasons.push(`统计数字大量丢失（缺 ${missingNums.slice(0, 4).join("、")}）`);
+      }
+    }
+
+    // ── 硬性项 4：不能凭空出现骨架里没有的 URL
+    const urlPattern = /https?:\/\/[^\s)\]"'<>]+/g;
+    const skeletonUrls = new Set((skeleton.match(urlPattern) || []).map((u) => u.replace(/[.,;]$/, "")));
+    const polishedUrls = (polished.match(urlPattern) || []).map((u) => u.replace(/[.,;]$/, ""));
+    const fabricatedUrls = polishedUrls.filter(
+      (u) => !skeletonUrls.has(u) && ![...skeletonUrls].some((s) => s.startsWith(u) || u.startsWith(s))
+    );
+    if (fabricatedUrls.length > 0) {
+      reasons.push(`出现骨架中没有的链接：${fabricatedUrls.slice(0, 2).join("、")}`);
+    }
+
+    // ── 硬性项 5：正文长度不得严重缩水（防止整段丢失）
+    if (skeleton.length > 200 && polished.length < skeleton.length * 0.4) {
+      reasons.push(
+        `正文长度从 ${skeleton.length} 缩至 ${polished.length}（不足骨架 40%），疑似整段丢失`
+      );
+    }
+
+    return { ok: reasons.length === 0, reasons };
+  }
+
+  /**
+   * 第一人称润色。
+   *
+   * 只接收「主题正文」（不含一级标题与全天统计行），
+   * 因此输出中不应出现 `# 一级标题`，由调用方负责拼回头部。
+   */
+  private async narrativePass(body: string, dateKey: string): Promise<string> {
     const apiBase = this.config.reportApiBase || this.config.llmApiBase;
     const apiKey = this.config.reportApiKey !== undefined ? this.config.reportApiKey : this.config.llmApiKey;
     const url = `${apiBase.replace(/\/+$/, "")}/chat/completions`;
@@ -543,7 +698,9 @@ export class ActivitySummarizer {
               { role: "system", content: OTUS_NARRATIVE_SYSTEM_PROMPT },
               {
                 role: "user",
-                content: `Here is the structured skeleton. Rewrite it into the final journal, following all rules.\n\n${skeleton}`
+                content: `以下是 ${dateKey} 当天的主题正文骨架（不含一级标题与全天统计行，这两部分由程序负责，你不要输出）。请按所有规则把它改写成第一人称日记正文，只保留二级标题及其下的内容。
+
+${body}`
               }
             ],
             temperature: 0.3
