@@ -66,6 +66,18 @@ export class ActivityRecorderService {
   private inputMonitorBinPath: string = "";
   private browserTabBinPath: string = "";
   private imgDiffBinPath: string = "";
+  private windowTitleBinPath: string = "";
+
+  // 窗口标题辅助进程（AXTitle）：按需请求，不自己轮询
+  private windowTitleProc: ChildProcess | null = null;
+  private windowTitleBuffer: string = "";
+  private windowTitleResolvers: Array<(v: { ok: boolean; title?: string; bundleId?: string; error?: string }) => void> = [];
+  // AX 权限缺失/连续失败时的退避：避免每次截图都白跑一次 IPC
+  private windowTitleFailures: number = 0;
+  private windowTitleNextAllowedAt: number = 0;
+  // 最近一次成功取到的窗口标题（供插入快照时使用）
+  private lastWindowTitle: string | null = null;
+  private windowTitleDisabled: boolean = false;
 
   public onSessionClosed?: (session: ActivitySession) => void;
   public onWake?: () => void;
@@ -92,6 +104,9 @@ export class ActivityRecorderService {
     if (this.config.enableInputMonitor) {
       this.startInputMonitor();
     }
+
+    // 2.1 启动窗口标题辅助进程（AXTitle，按需请求，不轮询）
+    this.startWindowTitleHelper();
 
     // 3. 启动常驻浏览器 AppleScript 通道
     this.startBrowserTabRunner();
@@ -165,6 +180,7 @@ export class ActivityRecorderService {
       this.browserTabProc.kill("SIGTERM");
       this.browserTabProc = null;
     }
+    this.stopWindowTitleHelper();
 
     this.closeCurrentSession("shutdown");
   }
@@ -223,12 +239,30 @@ export class ActivityRecorderService {
     this.inputMonitorBinPath = path.join(this.config.binDir, "otus-input-monitor");
     this.browserTabBinPath = path.join(this.config.binDir, "otus-browser-tab");
     this.imgDiffBinPath = path.join(this.config.binDir, "otus-diff");
+    // 窗口标题二进制：必须放在一个最小 .app bundle 内部。
+    // 原因（macOS 实测）：裸的 adhoc 命令行二进制，即使被用户手动加入「辅助功能」，
+    // 也常因 Gatekeeper / TCC 的 bundle 身份识别不稳定而拿不到 AX 权限，甚至被
+    // AppleSystemPolicy 直接 SIGKILL。把它装进一个带 Info.plist 的最小 .app 后，
+    // .app 的 bundle 身份让用户能在辅助功能面板里正常授权，且 AX 调用稳定生效。
+    const windowTitleApp = path.join(this.config.binDir, "OtusWindowTitle.app");
+    this.windowTitleBinPath = path.join(windowTitleApp, "Contents", "MacOS", "OtusWindowTitle");
 
     const compile = (srcName: string, outBin: string) => {
       const srcPath = path.join(nativeDir, srcName);
       if (!fs.existsSync(outBin) || fs.statSync(srcPath).mtimeMs > fs.statSync(outBin).mtimeMs) {
         console.log(`[ActivityRecorder] Compiling ${srcName} -> ${outBin}...`);
         execSync(`swiftc -O "${srcPath}" -o "${outBin}"`, { stdio: "inherit" });
+        // Gatekeeper 修复：swiftc 产出的 adhoc 二进制若带 com.apple.provenance
+        // 扩展属性，会被 AppleSystemPolicy 在内核层直接 SIGKILL（"load code signature
+        // error 2" / "Security policy would not allow process"）。清掉 provenance 并
+        // 显式 adhoc 重签名后即可正常执行。此问题只在一部分文件/目录上偶发，
+        // 故对所有辅助二进制统一处理，保证构建确定性。
+        try {
+          execSync(`xattr -c "${outBin}" 2>/dev/null || true`, { stdio: "ignore" });
+          execSync(`codesign --force -s - "${outBin}" 2>/dev/null || true`, { stdio: "ignore" });
+        } catch {
+          // 非致命：即使重签名失败，多数情况下二进制仍可运行
+        }
       }
     };
 
@@ -236,6 +270,177 @@ export class ActivityRecorderService {
     compile("input-monitor.swift", this.inputMonitorBinPath);
     compile("browser-tab.swift", this.browserTabBinPath);
     compile("img-diff.swift", this.imgDiffBinPath);
+
+    // 构建 window-title 的 .app bundle：先 compile 到 app 内 MacOS 路径，再补 Info.plist 并签名整个 bundle。
+    const wtSrc = path.join(nativeDir, "window-title.swift");
+    const wtNeedsBuild =
+      !fs.existsSync(this.windowTitleBinPath) ||
+      !fs.existsSync(path.join(windowTitleApp, "Contents", "Info.plist")) ||
+      fs.statSync(wtSrc).mtimeMs > fs.statSync(this.windowTitleBinPath).mtimeMs;
+    if (wtNeedsBuild) {
+      console.log(`[ActivityRecorder] Building window-title.app -> ${windowTitleApp}...`);
+      fs.mkdirSync(path.join(windowTitleApp, "Contents", "MacOS"), { recursive: true });
+      execSync(`swiftc -O "${wtSrc}" -o "${this.windowTitleBinPath}"`, { stdio: "inherit" });
+      fs.writeFileSync(
+        path.join(windowTitleApp, "Contents", "Info.plist"),
+        `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>OtusWindowTitle</string>
+    <key>CFBundleIdentifier</key><string>com.davidlin.otus.window-title</string>
+    <key>CFBundleName</key><string>OtusWindowTitle</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSBackgroundOnly</key><true/>
+    <key>LSUIElement</key><true/>
+    <key>NSSupportsAutomaticTermination</key><true/>
+    <key>NSSupportsSuddenTermination</key><true/>
+</dict>
+</plist>
+`
+      );
+      try {
+        execSync(`xattr -cr "${windowTitleApp}" 2>/dev/null || true`, { stdio: "ignore" });
+        execSync(`codesign --force --deep -s - "${windowTitleApp}" 2>/dev/null || true`, { stdio: "ignore" });
+      } catch {
+        // 非致命
+      }
+    }
+  }
+
+  /**
+   * 启动「窗口标题」辅助进程（长驻，按需请求 AXTitle）。
+   * 失败（无辅助功能权限 / 二进制缺失）时不让整个 daemon 崩溃，
+   * 只是把 windowTitleDisabled 置真，后续快照的 windowTitle 留空。
+   */
+  private startWindowTitleHelper(): void {
+    if (this.windowTitleDisabled) return;
+    if (!fs.existsSync(this.windowTitleBinPath)) return;
+    try {
+      const proc = spawn(this.windowTitleBinPath, [], { stdio: ["pipe", "pipe", "pipe"] });
+      this.windowTitleProc = proc;
+
+      proc.stdout?.on("data", (chunk: Buffer) => {
+        this.windowTitleBuffer += chunk.toString("utf-8");
+        const lines = this.windowTitleBuffer.split("\n");
+        this.windowTitleBuffer = lines.pop() ?? "";
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          // 一个回复对应一个等待中的 resolver
+          const resolve = this.windowTitleResolvers.shift();
+          if (!resolve) continue;
+          try {
+            resolve(JSON.parse(trimmed));
+          } catch {
+            resolve({ ok: false, error: "bad_json" });
+          }
+        }
+      });
+
+      proc.stderr?.on("data", (chunk: Buffer) => {
+        const msg = chunk.toString("utf-8").trim();
+        if (msg) console.error("[ActivityRecorder:WindowTitle stderr]", msg);
+      });
+
+      proc.on("exit", (code) => {
+        this.windowTitleProc = null;
+        // 退出时把所有挂起的请求以失败结算，避免 await 永远挂着
+        const pending = this.windowTitleResolvers;
+        this.windowTitleResolvers = [];
+        for (const r of pending) r({ ok: false, error: "helper_exited" });
+        if (this.isRunning && code !== 0 && code !== null) {
+          // 仅在"运行中且异常退出(非信号终止)"时告警；正常 stop 发 SIGTERM 时 code 为 null，不刷日志
+          console.warn(
+            `[ActivityRecorder] 窗口标题辅助进程异常退出 (code=${code})，windowTitle 将为 null。` +
+            `如需窗口标题，请在「系统设置 → 隐私与安全性 → 辅助功能」中授权这个 .app：` +
+            `${path.join(this.config.binDir, "OtusWindowTitle.app")}`
+          );
+        }
+      });
+    } catch (err) {
+      console.error("[ActivityRecorder] 启动窗口标题辅助进程失败：", err);
+      this.windowTitleDisabled = true;
+    }
+  }
+
+  private stopWindowTitleHelper(): void {
+    if (this.windowTitleProc) {
+      try { this.windowTitleProc.kill("SIGTERM"); } catch {}
+      this.windowTitleProc = null;
+    }
+    const pending = this.windowTitleResolvers;
+    this.windowTitleResolvers = [];
+    for (const r of pending) r({ ok: false, error: "stopped" });
+  }
+
+  /**
+   * 请求当前前台窗口的标题。带超时与退避：
+   *   - 无权限 / 连续失败时按指数退避（2s 起，封顶 60s），避免每次截图白跑 IPC
+   *   - 超时 800ms（AX 跨进程调用正常情况下 <10ms，超时说明目标 App 卡死）
+   * 返回 null 表示取不到（无权限、无窗口、超时、退避中）。
+   */
+  private async requestWindowTitle(bundleId: string): Promise<string | null> {
+    if (this.windowTitleDisabled || !this.windowTitleProc) return null;
+    if (Date.now() < this.windowTitleNextAllowedAt) return null;
+
+    return new Promise<string | null>((resolve) => {
+      let settled = false;
+      const done = (v: string | null) => {
+        if (settled) return;
+        settled = true;
+        resolve(v);
+      };
+
+      const timer = setTimeout(() => {
+        // 超时：认为该 App 的 AX 响应异常，累计失败并退避
+        this.onWindowTitleFailure("timeout");
+        done(null);
+      }, 800);
+
+      this.windowTitleResolvers.push((resp) => {
+        clearTimeout(timer);
+        if (resp.ok) {
+          this.windowTitleFailures = 0;
+          this.windowTitleNextAllowedAt = 0;
+          const title = (resp.title ?? "").trim();
+          done(title || null);
+        } else {
+          // accessibility_not_granted 是"确定性"错误：直接长退避并只提示一次
+          if (resp.error === "accessibility_not_granted") {
+            this.windowTitleDisabled = true;
+            console.warn(
+              "[ActivityRecorder] 未获得辅助功能权限，窗口标题将留空。" +
+              "如需补全，请在「系统设置 → 隐私与安全性 → 辅助功能」中授权这个 .app：" +
+              path.join(this.config.binDir, "OtusWindowTitle.app")
+            );
+          } else {
+            this.onWindowTitleFailure(resp.error ?? "unknown");
+          }
+          done(null);
+        }
+      });
+
+      try {
+        this.windowTitleProc!.stdin?.write(JSON.stringify({ bundleId }) + "\n");
+      } catch (e) {
+        clearTimeout(timer);
+        this.onWindowTitleFailure("write_failed");
+        done(null);
+      }
+    });
+  }
+
+  private onWindowTitleFailure(reason: string): void {
+    this.windowTitleFailures = Math.min(this.windowTitleFailures + 1, 16);
+    // 500ms * 2^(n-1)，封顶 60s
+    const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, this.windowTitleFailures - 1)));
+    this.windowTitleNextAllowedAt = Date.now() + backoff;
+    if (this.windowTitleFailures <= 3) {
+      console.warn(`[ActivityRecorder] 取窗口标题失败(${this.windowTitleFailures}/16, ${reason})，${backoff}ms 后重试`);
+    }
   }
 
   // 输入监听
@@ -471,6 +676,14 @@ export class ActivityRecorderService {
       fs.renameSync(tmpPath, finalPath);
       this.prevSnapshotPath = finalPath;
 
+      // 3.5 取窗口标题（AXTitle，仅非浏览器 App；浏览器已通过 AppleScript 拿标题）。
+      //     失败/无权限时为 null，不影响快照入库。请求被去抖到与截图同频，非轮询。
+      let windowTitle: string | null = null;
+      if (!this.isBrowserFrontmost()) {
+        windowTitle = await this.requestWindowTitle(this.frontmost.bundleId);
+        if (windowTitle) this.lastWindowTitle = windowTitle;
+      }
+
       // 4. 插入快照记录
       const snapId = this.store.insertSnapshot(session.id, {
         timestamp: Date.now(),
@@ -478,8 +691,20 @@ export class ActivityRecorderService {
         sizeBytes: stat.size,
         trigger,
         appName: this.frontmost.appName,
+        windowTitle,
         hashHex
       });
+
+      // 4.1 同步写一条 window_title 事件（非浏览器 App），供分析与报告层读取窗口上下文。
+      //     与浏览器路径的 window_title 事件（source=browser）互补，这里 source=ax。
+      if (windowTitle) {
+        this.store.insertEvent(session.id, {
+          timestamp: Date.now(),
+          kind: "window_title",
+          appName: this.frontmost.appName,
+          data: { title: windowTitle, source: "ax" }
+        });
+      }
 
       // 5. OCR 降频：每 ocrEveryN 张才识别一次，降低 Apple Vision 开销
       this.snapshotsSinceLastOcr++;
@@ -559,10 +784,14 @@ export class ActivityRecorderService {
     }
   }
 
+  private isBrowserFrontmost(): boolean {
+    const browserNames = ["Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge", "Firefox"];
+    return browserNames.some((b) => this.frontmost.appName.toLowerCase().includes(b.toLowerCase()));
+  }
+
   private async pollBrowserVisit(): Promise<void> {
     if (!this.currentSession || !this.frontmost.appName) return;
-    const browserNames = ["Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge", "Firefox"];
-    if (!browserNames.some((b) => this.frontmost.appName.toLowerCase().includes(b.toLowerCase()))) {
+    if (!this.isBrowserFrontmost()) {
       return;
     }
     // 该浏览器已因连续失败被停用
