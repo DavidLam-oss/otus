@@ -25,10 +25,12 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
 const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。你会收到某一天全部会话的清单，
 每条包含：编号、时间、时长、使用过的 App、分析标题、OCR 摘录、浏览过的 URL。
 
-你的任务是两件事：
+你的任务是三件事：
 (A) 把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
 (B) 修正每条会话的标题（title）——单条标题是由只看到这一段活动的模型生成的，
     经常被侧边栏/历史列表里出现的项目名带偏，需要你结合前后文纠正。
+(C) 为每个主题写一段「当日叙述」（narrative）——用一段连贯的话，
+    说清当天这个主题实际做了哪几件事、走了什么过程，像日记一样自然。
 
 判定原则（按优先级）：
 1. **看前后文，不看单个会话**。同一段时间连续做同一类事，即使单条标题措辞不同，也应归为同一主题。
@@ -44,12 +46,23 @@ const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。�
 5. 主题数量控制在 3~12 个之间。宁可少而准，不要多而碎。
 6. 时间上明显分散、内容也无关的活动，应分到不同主题。
 
+关于「当日叙述」(C) 的要求：
+- 用**一段连贯的话**（不是分条 bullet），像日记一样把这件事的来龙去脉讲清楚。
+- 同一件事的不同侧面要合在一起讲（例如「注册 Webhook」「删旧 Webhook」「改注册脚本域名」
+  「Webhook 随 push 生效」都是同一件事，应合并成一句叙述，而不是分开罗列）。
+- **有多少说多少，不要为凑字数硬写**：如果这个主题只发生了一件事，就一两句话讲完，
+  不要编造细节、不要凑长度。
+- 具体但不啰嗦：带上关键对象名、数字（如「修通 License.ts 字段名 Bug」「225 BPM」），
+  但**不要罗列所有细节**——细节留在数据库里，报告只做概览回顾。
+- 用自然的书面语，不用「在 XX 中做 YY」这种把 App 当主语的句式。
+
 输出格式（严格 JSON，不要任何解释文字）：
 {
   "themes": [
     {
       "name": "主题名（<= 16 字，具体而非空泛）",
-      "sessionIds": ["s0", "s3", "s7"]
+      "sessionIds": ["s0", "s3", "s7"],
+      "narrative": "这个主题当天做了什么的一段连贯叙述（<= 150 字，自然口语，不凑字数）"
     }
   ],
   "titles": [
@@ -90,6 +103,8 @@ export interface ThemeCluster {
   project: string | null;
   // LLM 全局归纳给出的主题名；为空时回退到 project/topics 推导
   displayName?: string;
+  // LLM 全局归纳提炼的主题主线（2~4 条），用于报告概览；为空时回退到 highlights
+  themeLines?: string[];
   sessions: { row: ActivitySession; ocrSnippets: string[]; browserVisits: any[]; windowTitles: string[] }[];
   entities: Record<string, any[]>;
   topics: string[];
@@ -426,7 +441,7 @@ export class ActivitySummarizer {
     const CHUNK = 60;
     for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
 
-    const merged = new Map<string, { name: string; ids: string[] }>();
+    const merged = new Map<string, { name: string; ids: string[]; lines: string[] }>();
     // 全局归纳阶段修正的会话标题：id -> 新标题
     const titleFixes = new Map<string, string>();
 
@@ -465,11 +480,17 @@ ${JSON.stringify(chunk, null, 2)}`;
           const name = String(t?.name || "").trim();
           const ids = Array.isArray(t?.sessionIds) ? t.sessionIds : [];
           if (!name || ids.length === 0) continue;
+          const narrative = typeof t?.narrative === "string" ? t.narrative.trim() : "";
+          const safeNarrative = narrative && narrative.length <= 300 ? narrative : "";
           // 同一主题名跨批次时合并
           const key = name.toLowerCase();
           const existing = merged.get(key);
-          if (existing) existing.ids.push(...ids);
-          else merged.set(key, { name, ids: [...ids] });
+          if (existing) {
+            existing.ids.push(...ids);
+            if (!existing.lines.length && safeNarrative) existing.lines.push(safeNarrative);
+          } else {
+            merged.set(key, { name, ids: [...ids], lines: safeNarrative ? [safeNarrative] : [] });
+          }
         }
 
         // 收集标题修正建议（id -> 新标题）
@@ -513,7 +534,7 @@ ${JSON.stringify(chunk, null, 2)}`;
     // 校验：LLM 只能使用给定编号，且每个编号只能出现一次
     const assigned = new Set<string>();
     const clusters: ThemeCluster[] = [];
-    for (const { name, ids } of merged.values()) {
+    for (const { name, ids, lines } of merged.values()) {
       const members: any[] = [];
       for (const id of ids) {
         const s = byId.get(id);
@@ -537,7 +558,8 @@ ${JSON.stringify(chunk, null, 2)}`;
         entities,
         topics,
         totalMs,
-        displayName: name
+        displayName: name,
+        themeLines: lines && lines.length ? lines : undefined
       } as ThemeCluster);
     }
 
@@ -804,13 +826,9 @@ ${JSON.stringify(chunk, null, 2)}`;
   private buildSkeleton(clusters: ThemeCluster[], dateKey: string, stats: any): string {
     const lines: string[] = this.buildSkeletonHeader(dateKey, stats);
 
-    // 按重要度排序：有 PR/Issue 的优先，其次按总时长降序
-    const sorted = [...clusters].sort((a, b) => {
-      const aArtifacts = (a.entities.prs?.length ?? 0) + (a.entities.issues?.length ?? 0);
-      const bArtifacts = (b.entities.prs?.length ?? 0) + (b.entities.issues?.length ?? 0);
-      if (aArtifacts !== bArtifacts) return bArtifacts - aArtifacts;
-      return b.totalMs - a.totalMs;
-    });
+    // 概览优先：纯按总时长降序（不再以 PR/Issue 数量优先，
+    // 因为很多活动是写文档/调配置/试工具，本身不产出代码工件）
+    const sorted = [...clusters].sort((a, b) => b.totalMs - a.totalMs);
 
     for (const c of sorted) {
       // 优先使用全局归纳给出的主题名；否则回退到 project/topics/标题推导
@@ -826,45 +844,117 @@ ${JSON.stringify(chunk, null, 2)}`;
       lines.push(`_${totalMin} 分钟 · ${sessCount} 个 session_`);
       lines.push("");
 
-      // highlights
-      const highlights: string[] = [];
-      for (const s of c.sessions) {
-        for (const h of s.row.highlights || []) {
-          if (!highlights.includes(h)) highlights.push(h);
+      // 主线优先用 LLM 全局归纳提炼的 themeLines（它能看全主题的会话，
+      // 把「注册 Webhook / 删旧 Webhook / 改脚本域名」这类同一件事的不同
+      // 侧面合并成一条，比任何字符串相似度算法都准）。
+      // 只有 LLM 归纳失败、回退到本地聚类时才用 highlights + 字符串去重兜底。
+      let highlights: string[];
+      if (c.themeLines && c.themeLines.length) {
+        highlights = c.themeLines;
+      } else {
+        const rawHighlights: string[] = [];
+        for (const s of c.sessions) {
+          for (const h of s.row.highlights || []) {
+            if (!rawHighlights.includes(h)) rawHighlights.push(h);
+          }
         }
+        highlights = this.dedupeHighlights(rawHighlights);
       }
       if (highlights.length) {
-        lines.push("**做了什么：**");
-        for (const h of highlights.slice(0, 6)) {
+        for (const h of highlights) {
           lines.push(`- ${h}`);
         }
-        lines.push("");
       }
 
-      // 关键信息 (Entities)
-      const entityLines = this.formatEntities(c.entities);
-      if (entityLines) {
-        lines.push("**关键信息：**");
-        lines.push(entityLines);
-        lines.push("");
+      // 结果性产出：只在有「合并/发布」这类明确成果时补一句
+      // （不是列举所有 PR/Issue，而是当天真正落地的结果）
+      const outcomes: string[] = [];
+      if (c.entities.prs?.length) {
+        const merged = c.entities.prs.filter((p: any) => p.state === "merged" || p.merged);
+        if (merged.length) outcomes.push(`${merged.length} 个 PR 已合并`);
       }
-
-      // 时间线 (Timeline)
-      lines.push("**时间线：**");
-      for (const s of c.sessions) {
-        const d = new Date(s.row.startedAt);
-        const timeStr = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-        const minStr = Math.max(1, Math.round((s.row.durationMs || 0) / 60000));
-        const title = s.row.analysisTitle || "(未分析)";
-        lines.push(`- ${timeStr} · ${minStr}m — ${title}`);
-        if (s.row.analysisDescription) {
-          lines.push(`  ${s.row.analysisDescription.slice(0, 240)}`);
-        }
+      if (c.entities.versions?.length) {
+        const vers = c.entities.versions.map((v: any) => v.label).filter(Boolean);
+        if (vers.length) outcomes.push(`涉及版本 ${vers.join("、")}`);
+      }
+      if (outcomes.length) {
+        lines.push("");
+        lines.push(`_成果：${outcomes.join(" · ")}_`);
       }
       lines.push("");
     }
 
     return lines.join("\n").trim();
+  }
+
+  /**
+   * highlights 智能去重。
+   *
+   * 报告只做概览，但「有多少说多少」——不能因为怕长就硬砍成固定 N 条，
+   * 也不能把同一件事的七八个侧面全列出来。
+   *
+   * 做法：字符 bigram 集合的 Jaccard 相似度聚类，相似度 >= 0.45 视为
+   * 同一件事；每簇取「信息量最大」的一条（长度适中、含具体名词/数字者优先）
+   * 作代表。这样：真正不同的主线都会保留，重复侧面的会被合并。
+   */
+  private dedupeHighlights(items: string[]): string[] {
+    if (items.length <= 3) return items;
+
+    const bigrams = (s: string): Set<string> => {
+      const clean = s.replace(/[\s，。、；：！？,.;:!?（）()「」【】\[\]"'`]/g, "");
+      const set = new Set<string>();
+      for (let i = 0; i < clean.length - 1; i++) set.add(clean.slice(i, i + 2));
+      return set;
+    };
+    const jaccard = (a: Set<string>, b: Set<string>): number => {
+      if (a.size === 0 || b.size === 0) return 0;
+      let inter = 0;
+      for (const x of a) if (b.has(x)) inter++;
+      return inter / (a.size + b.size - inter);
+    };
+
+    // 信息量评分：长度（偏好中等偏长，但过长扣分）+ 数字/英文专名加分
+    const score = (s: string): number => {
+      const len = s.length;
+      let sc = len >= 10 && len <= 60 ? len : len < 10 ? len * 0.5 : 60 - (len - 60) * 0.3;
+      const numbers = (s.match(/\d+|[A-Za-z]{3,}/g) || []).length;
+      return sc + numbers * 3;
+    };
+
+    const sets = items.map(bigrams);
+    const used = new Array(items.length).fill(false);
+    const clusters: number[][] = [];
+    for (let i = 0; i < items.length; i++) {
+      if (used[i]) continue;
+      used[i] = true;
+      const cluster = [i];
+      for (let j = i + 1; j < items.length; j++) {
+        if (used[j]) continue;
+        if (jaccard(sets[i], sets[j]) >= 0.45) {
+          used[j] = true;
+          cluster.push(j);
+        }
+      }
+      clusters.push(cluster);
+    }
+
+    // 每簇取信息量最大的一条作代表，保持原顺序
+    const reps = clusters
+      .map((cluster) => {
+        let best = cluster[0];
+        let bestScore = score(items[best]);
+        for (const idx of cluster.slice(1)) {
+          const sc = score(items[idx]);
+          if (sc > bestScore) {
+            best = idx;
+            bestScore = sc;
+          }
+        }
+        return best;
+      })
+      .sort((a, b) => a - b);
+
+    return reps.map((i) => items[i]);
   }
 
   private formatEntities(e: Record<string, any[]>): string {
