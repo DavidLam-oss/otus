@@ -47,6 +47,13 @@ export const REDACTION_RULES: RedactionRule[] = [
   {
     kind: "JWT_TOKEN",
     regex: /\beyJ[A-Za-z0-9-_]{15,}\.[A-Za-z0-9-_]{15,}\.[A-Za-z0-9-_]{15,}\b/g
+  },
+  // 8. 通用 NAME=VALUE / NAME: VALUE 形式的密钥赋值（如 WAFFO_PRIVATE_KEY=deadbeef、api_key: xxx）。
+  //    变量名须含 KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL/PRIVATE 等敏感词，值至少 8 位不含空白的串。
+  //    用分组回溯保留「变量名 + 赋值符」，只遮蔽值本身，尽量不破坏语句结构。
+  {
+    kind: "SECRET_ASSIGN",
+    regex: /\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)[A-Za-z0-9_]*\s*[:=]\s*)["']?([^\s"',]{8,})["']?/gi
   }
 ];
 
@@ -58,8 +65,13 @@ export function redactSensitiveText(text: string): { redacted: string; hits: Rec
 
   for (const rule of REDACTION_RULES) {
     const rx = new RegExp(rule.regex.source, rule.regex.flags);
-    output = output.replace(rx, () => {
+    output = output.replace(rx, (...args) => {
       hits[rule.kind] = (hits[rule.kind] ?? 0) + 1;
+      // SECRET_ASSIGN 有捕获组：保留第 1 组（变量名+赋值符），只遮蔽值。
+      // groups 参数位于末尾，可能带 trailing offset/string；取第一个捕获组。
+      if (rule.kind === "SECRET_ASSIGN" && typeof args[1] === "string") {
+        return `${args[1]}[REDACTED:${rule.kind}]`;
+      }
       return `[REDACTED:${rule.kind}]`;
     });
   }

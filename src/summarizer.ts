@@ -3,6 +3,7 @@ import type { ActivitySession } from "./store.ts";
 import { defaultConfig, getLocalDateKey } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 import { tokenize, tfidf, cosine, hacCluster, mmrSelect } from "./math-utils.ts";
+import { redactSensitiveText } from "./redactor.ts";
 
 const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人折腾日记执笔人。你将根据用户电脑上的真实活动骨架数据，撰写一篇真实、有洞察、略带极客自嘲风格的第一人称「个人折腾日记」。
 
@@ -24,7 +25,9 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
 `;
 
 const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。你会收到某一天全部会话的清单，
-每条包含：编号、时间、时长、使用过的 App、分析标题、OCR 摘录、浏览过的 URL。
+每条包含：编号、时间、时长、使用过的 App、分析标题；
+部分会话还会带有简短摘要（summary）、话题标签（topics）、以及高信号条目（signals，
+如涉及的文件/代码行、做出的关键决策）。缺失的字段表示该会话没有更多可用信息。
 
 你的任务是三件事：
 (A) 把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
@@ -401,6 +404,35 @@ export class ActivitySummarizer {
   }
 
   /**
+   * 从单会话分析产出的 entities 中挑选高信号条目（identifiers / decisions），
+   * 供全局主题归纳使用。去重、截断、限量：合计最多 5 条，每条 ≤40 字。
+   * 多数会话 entities 很稀疏（实测平均 identifiers 1.1 条、decisions 0.1 条），
+   * 因此有则取、无则返回空数组，绝不硬凑。
+   */
+  private pickHighSignalEntities(entities: any): string[] {
+    if (!entities || typeof entities !== "object") return [];
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const push = (v: any) => {
+      if (out.length >= 5) return;
+      if (v === null || v === undefined) return;
+      const s = String(v).replace(/\s+/g, " ").trim();
+      if (!s || s.length > 40 || seen.has(s)) return;
+      seen.add(s);
+      out.push(s);
+    };
+    // identifiers 通常是文件/代码行/变量名这类最精确的信号，优先。
+    if (Array.isArray(entities.identifiers)) {
+      for (const v of entities.identifiers) push(v);
+    }
+    // decisions 是"做了什么决策"，对主题归纳很有价值。
+    if (Array.isArray(entities.decisions)) {
+      for (const v of entities.decisions) push(v);
+    }
+    return out;
+  }
+
+  /**
    * 全局主题归纳：把全天会话交给 LLM 一次性归并成主题。
    *
    * 为什么放在报告阶段而不是分析阶段：
@@ -421,35 +453,72 @@ export class ActivitySummarizer {
     const hasLlm = !!apiKey || apiBase.includes("localhost") || apiBase.includes("127.0.0.1");
     if (!hasLlm || sessions.length === 0) return null;
 
-    // 构造精简清单：给模型足够判断依据，但不塞入全部 OCR 原文
+    // 构造精简清单：给模型足够判断依据，但不塞入全部 OCR 原文。
+    // 除 title 外，额外喂入 description / topics / 高信号 entities（identifiers、decisions），
+    // 这些是单会话分析阶段 LLM 已经产出的精确信息，此前完全没被利用。
     const byId = new Map<string, any>();
     const items = sessions.map((s, i) => {
       const id = `s${i}`;
       byId.set(id, s);
       const d = new Date(s.row.startedAt);
       const hhmm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-      return {
+
+      // description 截断到 80 字，避免 prompt 膨胀
+      const desc = (s.row.analysisDescription || "").replace(/\s+/g, " ").trim();
+      const summary = desc ? desc.slice(0, 80) : "";
+
+      // topics 直接用（最多 4 个）
+      const topics: string[] = Array.isArray(s.row.topics) ? s.row.topics.slice(0, 4) : [];
+
+      // 高信号实体：从 entities 里取 identifiers / decisions，
+      // 去重、限长、限条数（合计最多 5 条、每条 ≤40 字）。
+      // 注意：多数会话可能只有 1 条甚至 0 条，有则取、无则空，不硬凑。
+      const signals = this.pickHighSignalEntities(s.row.entities);
+
+      const item: any = {
         id,
         time: hhmm,
         minutes: Math.max(1, Math.round((s.row.durationMs || 0) / 60000)),
         apps: s.row.appNames,
         title: s.row.analysisTitle || "(无标题)"
       };
+      if (summary) item.summary = summary;
+      if (topics.length > 0) item.topics = topics;
+      if (signals.length > 0) item.signals = signals;
+      return item;
     });
 
-    // 分批：超过 60 个会话时按时间顺序切块，避免单次 prompt 过大
+    // 分批：按估算 token 切块，避免单次 prompt 过大（原实现固定 60 条无 token 预算）。
+    // 粗估：一个中文字符 ≈ 1 token，一个 ASCII 词 ≈ 0.3 token；这里用 JSON 长度 / 2
+    // 作为保守的 token 估算（JSON 里 ASCII 占多数），单块预算 ~6000 token。
     const chunks: any[][] = [];
-    const CHUNK = 60;
-    for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
+    const TOKEN_BUDGET = 6000;
+    let cur: any[] = [];
+    let curTokens = 0;
+    for (const it of items) {
+      const est = Math.ceil(JSON.stringify(it).length / 2);
+      if (cur.length > 0 && curTokens + est > TOKEN_BUDGET) {
+        chunks.push(cur);
+        cur = [];
+        curTokens = 0;
+      }
+      cur.push(it);
+      curTokens += est;
+    }
+    if (cur.length > 0) chunks.push(cur);
 
     const merged = new Map<string, { name: string; ids: string[]; lines: string[] }>();
     // 全局归纳阶段修正的会话标题：id -> 新标题
     const titleFixes = new Map<string, string>();
 
     for (const chunk of chunks) {
-      const prompt = `以下是 ${dateKey} 的会话清单，请归并为若干核心主题。
+      // 脱敏：此通道此前直接 JSON.stringify 拼进 prompt，无脱敏，
+      // 会把 identifiers 里的密钥/Token（如 WAFFO_PRIVATE_KEY）送给 LLM。
+      // 单会话分析阶段走了 redactSensitiveText，这里必须对齐（AGENTS.md 隐私铁律）。
+      const rawPrompt = `以下是 ${dateKey} 的会话清单，请归并为若干核心主题。
 
 ${JSON.stringify(chunk, null, 2)}`;
+      const prompt = redactSensitiveText(rawPrompt).redacted;
 
       try {
         const controller = new AbortController();
