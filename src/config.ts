@@ -42,6 +42,13 @@ export interface OtusConfig {
   // 可参与合并的短碎片时长上限：超过该时长的会话视为完整活动单元，不参与合并
   mergeMaxDurationMs: number;
 
+  // HAC 聚类的切割距离（= 1 - 余弦相似度 + 时间惩罚）。越小越易并簇。
+  clusterCutDistance: number;
+  // 时间连续性惩罚权重 β（0 关闭；封顶 β，线性斜坡到饱和）
+  clusterTimeBeta: number;
+  // 时间惩罚衰减尺度 τ（毫秒）：间隔超过 τ 后惩罚饱和到 β
+  clusterTimeTauMs: number;
+
   // 分析质量门槛：三项指标全部低于下限时才跳过 LLM（对齐 Alma）
   minSessionDurationMs: number;
   minSessionEventCount: number;
@@ -101,6 +108,10 @@ export const baseConfig: OtusConfig = {
   ocrEveryN: 3,                   // 每 3 张快照才执行一次 OCR（对齐 Alma，降低 Vision 开销）
   mergeGapMs: 300000,             // 5 分钟内的相邻同类会话在分析前合并（对齐 Alma）
   mergeMaxDurationMs: 180000,     // 3 分钟以内的会话视为碎片，可参与合并
+
+  clusterCutDistance: 0.62,       // HAC 切割距离（相似度≈0.38 以上倾向同簇）
+  clusterTimeBeta: 0.25,          // 时间连续性弱惩罚权重（封顶）
+  clusterTimeTauMs: 1800000,      // 时间惩罚衰减尺度 30 分钟（超过则惩罚饱和）
 
   minSessionDurationMs: 30000,    // 30 秒
   minSessionEventCount: 20,       // 20 个事件
@@ -185,6 +196,10 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     // 合并窗口：过小则形同虚设，过大可能把不相关工作拼在一起
     mergeGapMs: roundTo(cfg.mergeGapMs, 300000, 60000, 1800000),
     mergeMaxDurationMs: roundTo(cfg.mergeMaxDurationMs, 180000, 30000, 1800000),
+    // HAC 聚类参数：切割距离 [0.3, 0.9]、时间惩罚 β [0, 0.6]、τ [5min, 4h]
+    clusterCutDistance: clampFloat(cfg.clusterCutDistance, 0.62, 0.3, 0.9),
+    clusterTimeBeta: clampFloat(cfg.clusterTimeBeta, 0.25, 0, 0.6),
+    clusterTimeTauMs: roundTo(cfg.clusterTimeTauMs, 1800000, 300000, 14400000),
     minSessionDurationMs: roundTo(cfg.minSessionDurationMs, 30000, 0, 600000),
     minSessionEventCount: roundTo(cfg.minSessionEventCount, 20, 0, 1000),
     minSessionSnapshotCount: roundTo(cfg.minSessionSnapshotCount, 3, 0, 100),

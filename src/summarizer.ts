@@ -2,6 +2,7 @@ import { ActivityStore } from "./store.ts";
 import type { ActivitySession } from "./store.ts";
 import { defaultConfig, getLocalDateKey } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
+import { tokenize, tfidf, cosine, hacCluster, mmrSelect } from "./math-utils.ts";
 
 const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人折腾日记执笔人。你将根据用户电脑上的真实活动骨架数据，撰写一篇真实、有洞察、略带极客自嘲风格的第一人称「个人折腾日记」。
 
@@ -591,61 +592,63 @@ ${JSON.stringify(chunk, null, 2)}`;
     return clusters;
   }
 
-  // 原生 Jaccard 相似度聚类算法
+  // 🔢 数学聚类：TF-IDF + 平均链接 HAC（替换原贪心单遍）
+  //
+  // 为什么改：
+  //  - 原「贪心单遍 + Jaccard≥0.18」对输入顺序敏感（同一批会话换序结果不同），
+  //    且 0.18 阈值是拍脑袋。HAC 每步合并「全局」最相似的一对簇，无顺序概念，
+  //    从原理上根治顺序敏感；切割高度由当天距离分布自适应决定。
+  //  - 原 token 只取结构化字段（project/topics/entities），丢了标题/描述的自然语言，
+  //    导致「同一件事不同措辞」无法靠近。现改用 sessionDocText 融合自然语言 + 结构化。
+  //  - 时间连续性作为「弱辅助」惩罚项进入距离矩阵（β 封顶），替代原先「时间窗口+同 App」硬规则。
   private clusterSessions(sessions: any[]): ThemeCluster[] {
+    if (sessions.length === 0) return [];
     const sorted = [...sessions].sort((a, b) => a.row.startedAt - b.row.startedAt);
+
+    // 1) 逐会话生成文档文本 → TF-IDF 向量
+    const docs = sorted.map((s) => tokenize(this.sessionDocText(s)));
+    const vecs = tfidf(docs);
+
+    // 2) HAC 聚类（时间戳用于弱时间惩罚）
+    const timestamps = sorted.map((s) => s.row.startedAt);
+    const rawClusters = hacCluster(vecs, {
+      cutDistance: this.config.clusterCutDistance,
+      timeBeta: this.config.clusterTimeBeta,
+      timeTau: this.config.clusterTimeTauMs,
+      timestamps
+    });
+
+    // 3) 把索引簇转成 ThemeCluster，并做「App 兼容性」后校验：
+    //    HAC 可能把「共享词但不同 App 族」的会话并一起（如都用 Chrome），
+    //    这里对每个多成员簇按共享 App 再细分成子簇，避免跨 App 污染。
     const clusters: ThemeCluster[] = [];
-
-    for (const item of sorted) {
-      const tokens = this.extractTokens(item);
-
-      // 若有显式 project：仍需交叉校验，不能无条件归并。
-      // 背景：project 由 LLM「推断」，实测会把「用 Obsidian 写关于 WorkBuddy 的文章」
-      // 误判成 obsidian-wechat-converter，进而污染整个主题。
-      if (item.row.project) {
-        const key = `proj:${item.row.project.toLowerCase()}`;
-        const existing = clusters.find((c) => c.key === key);
-        if (existing && this.isCompatibleWithCluster(existing, item)) {
-          existing.sessions.push(item);
-          this.mergeEntities(existing.entities, item.row.entities);
-          for (const t of item.row.topics || []) {
-            if (!existing.topics.includes(t)) existing.topics.push(t);
+    for (const rc of rawClusters) {
+      const items = rc.members.map((i) => sorted[i]);
+      const subGroups: any[][] = [];
+      for (const item of items) {
+        // 找能容纳它的子组（共享 App 或共享 repo 实体）
+        let placed = false;
+        for (const g of subGroups) {
+          const merged = this.newCluster(`tmp:${clusters.length}:${subGroups.indexOf(g)}`, g[0]);
+          for (const gi of g.slice(1)) {
+            merged.sessions.push(gi);
+            this.mergeEntities(merged.entities, gi.row.entities);
+            for (const t of gi.row.topics || []) if (!merged.topics.includes(t)) merged.topics.push(t);
+            merged.totalMs += gi.row.durationMs || 0;
           }
-          existing.totalMs += item.row.durationMs || 0;
-          continue;
+          if (this.isCompatibleWithCluster(merged, item)) { g.push(item); placed = true; break; }
         }
-        if (existing) {
-          // 同 project 但内容不兼容：另起一个带后缀的簇，避免与错误归并混在一起
-          clusters.push(this.newCluster(`${key}#${clusters.length}`, item));
-          continue;
-        }
-        clusters.push(this.newCluster(key, item));
-        continue;
+        if (!placed) subGroups.push([item]);
       }
-
-      // 无显式 project，计算 Jaccard 相似度
-      let bestCluster: ThemeCluster | null = null;
-      let maxSim = 0;
-      for (const c of clusters) {
-        // 与 project 簇合并时同样要求 App 兼容，避免「写稿」被吸进「改代码」的主题
-        if (!this.isCompatibleWithCluster(c, item)) continue;
-        const cTokens = this.clusterTokens(c);
-        const sim = this.jaccard(tokens, cTokens);
-        if (sim > maxSim) {
-          maxSim = sim;
-          bestCluster = c;
+      for (const g of subGroups) {
+        const cl = this.newCluster(`sess:${g[0].row.id}`, g[0]);
+        for (const extra of g.slice(1)) {
+          cl.sessions.push(extra);
+          this.mergeEntities(cl.entities, extra.row.entities);
+          for (const t of extra.row.topics || []) if (!cl.topics.includes(t)) cl.topics.push(t);
+          cl.totalMs += extra.row.durationMs || 0;
         }
-      }
-
-      if (bestCluster && maxSim >= 0.18) {
-        bestCluster.sessions.push(item);
-        this.mergeEntities(bestCluster.entities, item.row.entities);
-        for (const t of item.row.topics || []) {
-          if (!bestCluster.topics.includes(t)) bestCluster.topics.push(t);
-        }
-        bestCluster.totalMs += item.row.durationMs || 0;
-      } else {
-        clusters.push(this.newCluster(`sess:${item.row.id}`, item));
+        clusters.push(cl);
       }
     }
 
@@ -738,39 +741,29 @@ ${JSON.stringify(chunk, null, 2)}`;
     return sharesApp || sharesRepo;
   }
 
-  private extractTokens(item: any): Set<string> {
-    const set = new Set<string>();
-    if (item.row.project) set.add(`proj:${item.row.project.toLowerCase()}`);
-    for (const t of item.row.topics || []) set.add(`topic:${t.toLowerCase()}`);
-    const e = item.row.entities || {};
-    for (const pr of e.prs || []) if (pr.label || pr.ref) set.add(`pr:${pr.label || pr.ref}`);
-    for (const iss of e.issues || []) if (iss.label || iss.ref) set.add(`iss:${iss.label || iss.ref}`);
-    for (const c of e.commits || []) if (c.label || c.ref) set.add(`commit:${c.label || c.ref}`);
-    for (const p of e.people || []) if (p.handle) set.add(`person:${p.handle}`);
-    for (const id of e.identifiers || []) set.add(`id:${id.toLowerCase()}`);
-    return set;
-  }
-
-  private clusterTokens(c: ThemeCluster): Set<string> {
-    const set = new Set<string>();
-    if (c.project) set.add(`proj:${c.project.toLowerCase()}`);
-    for (const t of c.topics) set.add(`topic:${t.toLowerCase()}`);
-    for (const pr of c.entities.prs || []) if (pr.label || pr.ref) set.add(`pr:${pr.label || pr.ref}`);
-    for (const iss of c.entities.issues || []) if (iss.label || iss.ref) set.add(`iss:${iss.label || iss.ref}`);
-    for (const cmt of c.entities.commits || []) if (cmt.label || cmt.ref) set.add(`commit:${cmt.label || cmt.ref}`);
-    for (const p of c.entities.people || []) if (p.handle) set.add(`person:${p.handle}`);
-    for (const id of c.entities.identifiers || []) set.add(`id:${String(id).toLowerCase()}`);
-    return set;
-  }
-
-  private jaccard(a: Set<string>, b: Set<string>): number {
-    if (!a.size || !b.size) return 0;
-    let intersection = 0;
-    for (const item of a) {
-      if (b.has(item)) intersection++;
-    }
-    const union = a.size + b.size - intersection;
-    return union === 0 ? 0 : intersection / union;
+  /**
+   * 为一个会话生成「可比较的文本」用于 TF-IDF 向量化。
+   * 把结构化高信号（project/topics/entities）+ 自然语言（标题/描述）合在一起：
+   *  - 自然语言部分让「同一件事的不同措辞」通过字符 bigram 有重叠；
+   *  - 结构化部分（尤其 project/repo/issue ref）是稀有 token，TF-IDF 会给高 IDF 权重。
+   * 拼接后整体喂给 tokenize()。
+   */
+  private sessionDocText(item: any): string {
+    const parts: string[] = [];
+    const r = item.row;
+    if (r.analysisTitle) parts.push(r.analysisTitle);
+    if (r.analysisDescription) parts.push(String(r.analysisDescription).slice(0, 200));
+    if (r.project) parts.push("proj " + r.project);
+    for (const t of r.topics || []) parts.push(String(t));
+    const e = r.entities || {};
+    for (const pr of e.prs || []) parts.push(String(pr.label || pr.ref || ""));
+    for (const iss of e.issues || []) parts.push(String(iss.label || iss.ref || ""));
+    for (const c of e.commits || []) parts.push(String(c.label || c.ref || ""));
+    for (const p of e.people || []) parts.push(String(p.handle || ""));
+    for (const id of e.identifiers || []) parts.push(String(id));
+    // OCR 摘录也纳入（截断，避免噪声过大）
+    for (const ocr of item.ocrSnippets || []) parts.push(String(ocr).slice(0, 120));
+    return parts.join(" ");
   }
 
   private mergeEntities(target: Record<string, any[]>, source: Record<string, any[]>): void {
@@ -900,61 +893,24 @@ ${JSON.stringify(chunk, null, 2)}`;
   private dedupeHighlights(items: string[]): string[] {
     if (items.length <= 3) return items;
 
-    const bigrams = (s: string): Set<string> => {
-      const clean = s.replace(/[\s，。、；：！？,.;:!?（）()「」【】\[\]"'`]/g, "");
-      const set = new Set<string>();
-      for (let i = 0; i < clean.length - 1; i++) set.add(clean.slice(i, i + 2));
-      return set;
-    };
-    const jaccard = (a: Set<string>, b: Set<string>): number => {
-      if (a.size === 0 || b.size === 0) return 0;
-      let inter = 0;
-      for (const x of a) if (b.has(x)) inter++;
-      return inter / (a.size + b.size - inter);
-    };
-
-    // 信息量评分：长度（偏好中等偏长，但过长扣分）+ 数字/英文专名加分
+    // 🔢 MMR 边际相关性去重（替换原「bigram Jaccard≥0.45 聚类取最长」）。
+    // 为什么改：原方法只能合并「字面高度重叠」的句子，对同义改写无能——
+    // 实测 30 条讲同一件事的不同表述，去重后仍是 30 条。
+    // MMR 用「相关性 − 与已选最大相似度」的贪心选择，天然带多样性惩罚，
+    // 既保主题相关、又压掉重复侧面，且无需人工阈值。
+    // 信息量评分沿用原启发式（长度适中 + 数字/英文专名加分）作为相关性。
     const score = (s: string): number => {
       const len = s.length;
       let sc = len >= 10 && len <= 60 ? len : len < 10 ? len * 0.5 : 60 - (len - 60) * 0.3;
       const numbers = (s.match(/\d+|[A-Za-z]{3,}/g) || []).length;
       return sc + numbers * 3;
     };
-
-    const sets = items.map(bigrams);
-    const used = new Array(items.length).fill(false);
-    const clusters: number[][] = [];
-    for (let i = 0; i < items.length; i++) {
-      if (used[i]) continue;
-      used[i] = true;
-      const cluster = [i];
-      for (let j = i + 1; j < items.length; j++) {
-        if (used[j]) continue;
-        if (jaccard(sets[i], sets[j]) >= 0.45) {
-          used[j] = true;
-          cluster.push(j);
-        }
-      }
-      clusters.push(cluster);
-    }
-
-    // 每簇取信息量最大的一条作代表，保持原顺序
-    const reps = clusters
-      .map((cluster) => {
-        let best = cluster[0];
-        let bestScore = score(items[best]);
-        for (const idx of cluster.slice(1)) {
-          const sc = score(items[idx]);
-          if (sc > bestScore) {
-            best = idx;
-            bestScore = sc;
-          }
-        }
-        return best;
-      })
-      .sort((a, b) => a - b);
-
-    return reps.map((i) => items[i]);
+    const rel = items.map(score);
+    // 目标条数：保留约 sqrt(n) 到 6 条之间，至少 3 条（避免过度压缩成 1 条）
+    const k = Math.max(3, Math.min(6, Math.round(Math.sqrt(items.length)) + 1));
+    const chosen = mmrSelect(items, rel, k, 0.6);
+    // 按原顺序输出（保持时间线自然顺序）
+    return chosen.sort((a, b) => a - b).map((i) => items[i]);
   }
 
   private formatEntities(e: Record<string, any[]>): string {

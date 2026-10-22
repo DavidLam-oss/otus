@@ -18,6 +18,10 @@ outputs/
 *.log
 *.tmp
 tmp/
+# 本地数据库（含测试误建的空文件），不入库
+*.db
+*.db-wal
+*.db-shm
 
 # Environments & Dependencies
 .env
