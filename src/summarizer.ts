@@ -485,6 +485,16 @@ export class ActivitySummarizer {
       if (summary) item.summary = summary;
       if (topics.length > 0) item.topics = topics;
       if (signals.length > 0) item.signals = signals;
+
+      // 客观行为信号（纯计算派生自 events）：帮助 LLM 判断深度工作 vs 碎片切换。
+      // focusSwitches 高 + clickRate 高 = 频繁切换；focusSwitches 低 = 偏专注。
+      const act = s.row.signals?.activity;
+      if (act && typeof act === "object") {
+        const brief: any = {};
+        if (typeof act.focusSwitches === "number") brief.focusSwitches = act.focusSwitches;
+        if (typeof act.clickRate === "number") brief.clickRate = act.clickRate;
+        if (Object.keys(brief).length > 0) item.activity = brief;
+      }
       return item;
     });
 

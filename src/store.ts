@@ -21,6 +21,16 @@ try {
   };
 }
 
+/** 安全解析 JSON：失败或空返回默认值，避免脏数据中断整表读取。 */
+function safeJsonParse<T>(raw: any, fallback: T): T {
+  if (raw === null || raw === undefined || raw === "") return fallback;
+  try {
+    return JSON.parse(String(raw)) as T;
+  } catch {
+    return fallback;
+  }
+}
+
 export interface ActivitySession {
   id: string;
   startedAt: number;
@@ -45,6 +55,7 @@ export interface ActivitySession {
   topics: string[];
   project: string | null;
   highlights: string[];
+  signals: Record<string, any>;
   createdAt: number;
   updatedAt: number;
 }
@@ -137,6 +148,7 @@ export class ActivityStore {
           topics TEXT NOT NULL DEFAULT '[]',
           project TEXT,
           highlights TEXT NOT NULL DEFAULT '[]',
+          signals TEXT NOT NULL DEFAULT '{}',
           created_at INTEGER NOT NULL,
           updated_at INTEGER NOT NULL
       );
@@ -208,6 +220,38 @@ export class ActivityStore {
       );
       CREATE INDEX IF NOT EXISTS idx_activity_summaries_date ON activity_summaries(kind, date_key);
     `);
+
+    // 幂等增量迁移：老库的 activity_sessions 没有 signals 列，CREATE TABLE IF NOT EXISTS
+    // 不会给它补列。这里显式补，保证老库升级后也能用新字段。
+    this.ensureColumn("activity_sessions", "signals", "signals TEXT NOT NULL DEFAULT '{}'");
+  }
+
+  /**
+   * 幂等加列：列不存在才 ALTER TABLE ADD COLUMN。
+   *
+   * 并发注意：迁移发生在 initTables（进程启动早期、采集尚未开始时）。
+   * daemon 正常运行期间库是热的，但启动期是我们独占的窗口期。
+   * 为避免与极少数残留连接竞争，用 BEGIN IMMEDIATE 显式抢写锁，
+   * 失败（已存在/被并发加过）即静默忽略。新列带 DEFAULT，SQLite 3.35+
+   * 是纯元数据 O(1) 操作，不重写表。
+   */
+  private ensureColumn(table: string, column: string, ddl: string): void {
+    try {
+      const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as any[];
+      if (cols.some((c) => c.name === column)) return;
+      this.db.exec("BEGIN IMMEDIATE");
+      try {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+        this.db.exec("COMMIT");
+      } catch (e) {
+        try { this.db.exec("ROLLBACK"); } catch {}
+        // 并发下可能已被别的连接加过，重新检查一次
+        const again = this.db.prepare(`PRAGMA table_info(${table})`).all() as any[];
+        if (!again.some((c) => c.name === column)) throw e;
+      }
+    } catch (e) {
+      console.warn(`[ActivityStore] ensureColumn(${table}.${column}) 失败：`, String((e as any)?.message || e));
+    }
   }
 
   // Session CRUD
@@ -292,7 +336,61 @@ export class ActivityStore {
 
     // 3. 删除被合并的会话
     this.db.prepare(`DELETE FROM activity_sessions WHERE id = ?`).run(sourceId);
+
+    // 4. 合并后重新派生 signals（合并体的事件集合已变，旧 signals 失效）
+    this.updateSessionSignals(targetId);
     return true;
+  }
+
+  /**
+   * 派生会话的行为信号（纯计算，无新采集），写入 signals.activity。
+   *
+   * 目前计算：
+   *   - focusSwitches: 相邻 app_focus 事件 bundleId 变化的次数（切换频率）
+   *   - clickCount / clickRate: 点击数 / 每分钟点击数（交互密度）
+   *   - activeSeconds: 会话时长（秒）
+   *   - eventCount: 事件总数
+   *
+   * 只写 signals.activity，保留 signals 中其它已有字段（如后续的 focusWindows/keywords）。
+   */
+  public updateSessionSignals(sessionId: string): void {
+    const sess = this.getSession(sessionId);
+    if (!sess) return;
+    const events = this.listEvents(sessionId, 5000);
+
+    let clickCount = 0;
+    let lastFocusKey: string | null = null;
+    let focusSwitches = 0;
+    for (const ev of events) {
+      if (ev.kind === "click") {
+        clickCount++;
+      } else if (ev.kind === "app_focus") {
+        const key = String(ev.data?.bundleId ?? ev.appName ?? "");
+        if (key) {
+          if (lastFocusKey !== null && key !== lastFocusKey) focusSwitches++;
+          lastFocusKey = key;
+        }
+      }
+    }
+
+    const activeSeconds = Math.max(0, Math.round((sess.durationMs ?? 0) / 1000));
+    const minutes = Math.max(1, Math.round((sess.durationMs ?? 0) / 60000));
+    const clickRate = Math.round((clickCount / minutes) * 10) / 10;
+
+    const prev = sess.signals && typeof sess.signals === "object" ? sess.signals : {};
+    const next = {
+      ...prev,
+      activity: {
+        focusSwitches,
+        clickCount,
+        clickRate,
+        activeSeconds,
+        eventCount: events.length
+      }
+    };
+    this.db
+      .prepare(`UPDATE activity_sessions SET signals = ?, updated_at = ? WHERE id = ?`)
+      .run(JSON.stringify(next), Date.now(), sessionId);
   }
 
   /**
@@ -317,6 +415,7 @@ export class ActivityStore {
           topics = '[]',
           project = NULL,
           highlights = '[]',
+          signals = '{}',
           updated_at = ?
       WHERE id = ?
     `).run(now, id);
@@ -334,6 +433,13 @@ export class ActivityStore {
       SET ended_at = ?, duration_ms = ?, updated_at = ?
       WHERE id = ?
     `).run(end, durationMs, now, id);
+
+    // 会话闭合时派生一次行为信号（纯计算，失败不影响会话关闭）
+    try {
+      this.updateSessionSignals(id);
+    } catch (e) {
+      console.warn("[ActivityStore] updateSessionSignals 失败：", String((e as any)?.message || e));
+    }
   }
 
   public listSessions(opts: { since?: number; until?: number; limit?: number; analysisStatus?: string | string[]; analysisModel?: string } = {}): ActivitySession[] {
@@ -680,6 +786,7 @@ export class ActivityStore {
       topics: JSON.parse(r.topics || "[]"),
       project: r.project,
       highlights: JSON.parse(r.highlights || "[]"),
+      signals: safeJsonParse(r.signals, {}),
       createdAt: r.created_at,
       updatedAt: r.updated_at
     };
