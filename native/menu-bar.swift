@@ -1,6 +1,5 @@
 import Cocoa
 import Foundation
-import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
@@ -178,12 +177,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         analyzeMenuItem?.isEnabled = true
 
         // 系统通知：任务完成/失败时给出明确结果
-        let content = UNMutableNotificationContent()
-        content.title = success ? "Otus" : "Otus 出错了"
-        content.body = message
-        if !success { content.sound = .default }
-        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
-        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+        // 用 NSUserNotification 而非 UserNotifications：菜单栏以裸二进制
+        // 方式运行、没有 .app bundle，UNUserNotificationCenter 会因取不到
+        // 通知中心而抛异常崩溃（实测 SIGABRT）。NSUserNotification 虽已废弃
+        // 但在该场景稳定可用。
+        let alert = NSUserNotification()
+        alert.title = success ? "Otus" : "Otus 出错了"
+        alert.informativeText = message
+        if !success { alert.soundName = NSUserNotificationDefaultSoundName }
+        NSUserNotificationCenter.default.deliver(alert)
 
         updateStatus()
     }
