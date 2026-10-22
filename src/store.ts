@@ -384,6 +384,13 @@ export class ActivityStore {
     return rows.map((r) => this.mapSessionRow(r));
   }
 
+  /** 仅更新会话标题（用于全局归纳阶段修正被侧边栏项目名带偏的标题） */
+  public updateSessionTitle(id: string, title: string): void {
+    this.db
+      .prepare(`UPDATE activity_sessions SET analysis_title = ?, updated_at = ? WHERE id = ?`)
+      .run(title, Date.now(), id);
+  }
+
   public countAnalyzedSessionsSince(since: number): number {
     const row = this.db.prepare(`
       SELECT COUNT(*) as count

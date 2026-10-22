@@ -25,16 +25,22 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
 const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。你会收到某一天全部会话的清单，
 每条包含：编号、时间、时长、使用过的 App、分析标题、OCR 摘录、浏览过的 URL。
 
-你的任务是：把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
+你的任务是两件事：
+(A) 把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
+(B) 修正每条会话的标题（title）——单条标题是由只看到这一段活动的模型生成的，
+    经常被侧边栏/历史列表里出现的项目名带偏，需要你结合前后文纠正。
 
 判定原则（按优先级）：
 1. **看前后文，不看单个会话**。同一段时间连续做同一类事，即使单条标题措辞不同，也应归为同一主题。
-2. 判断依据是「实际在产出什么」，不是「打开了哪个 App」。
+2. 判断依据是「实际在产出什么」，不是「打开了哪个 App」，
+   也不是「侧边栏/历史列表里出现了什么」。
    例：用 Obsidian 和 WorkBuddy 写关于某产品的公众号文章 → 主题是「写公众号文章」，
    即使侧边栏里出现过别的项目名，也不代表在改那个项目的代码。
 3. 只有当会话里**明确出现该项目的产物**（该仓库的 Issue/PR、代码文件、构建命令、git 操作）
-   才可以把主题命名为该项目的名字。
-4. 应用侧边栏、工作区列表、历史任务标题里出现的项目名，**不能**作为主题命名的依据。
+   才可以把主题或标题命名为该项目的名字。
+4. 应用侧边栏、工作区列表、历史任务标题里出现的项目名，**不能**作为命名依据。
+   （这是最常见的误判来源：用户在 A 应用里做某件事，A 的侧边栏恰好列出 B 项目，
+   模型就把这条会话说成「在搞 B」。）
 5. 主题数量控制在 3~12 个之间。宁可少而准，不要多而碎。
 6. 时间上明显分散、内容也无关的活动，应分到不同主题。
 
@@ -45,12 +51,18 @@ const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。�
       "name": "主题名（<= 16 字，具体而非空泛）",
       "sessionIds": ["s0", "s3", "s7"]
     }
+  ],
+  "titles": [
+    { "id": "s0", "title": "修正后的标题（<= 20 字，直述实际做了什么）" }
   ]
 }
 
 要求：
 - 每个会话编号必须且只能出现在一个主题里，不得遗漏、不得重复。
 - 只能使用输入中出现过的会话编号。
+- titles 里请为**每一条**会话都给出修正标题；若原标题已准确，可原样返回。
+- 标题要直述实际产出（如「与 AI 排查菜单栏崩溃并修复」），
+  不要写「在 XX 中做 YY」这种把 App 当主语的句式。
 
 `;
 
@@ -415,6 +427,8 @@ export class ActivitySummarizer {
     for (let i = 0; i < items.length; i += CHUNK) chunks.push(items.slice(i, i + CHUNK));
 
     const merged = new Map<string, { name: string; ids: string[] }>();
+    // 全局归纳阶段修正的会话标题：id -> 新标题
+    const titleFixes = new Map<string, string>();
 
     for (const chunk of chunks) {
       const prompt = `以下是 ${dateKey} 的会话清单，请归并为若干核心主题。
@@ -457,6 +471,19 @@ ${JSON.stringify(chunk, null, 2)}`;
           if (existing) existing.ids.push(...ids);
           else merged.set(key, { name, ids: [...ids] });
         }
+
+        // 收集标题修正建议（id -> 新标题）
+        if (Array.isArray(parsed.titles)) {
+          for (const t of parsed.titles) {
+            const id = String(t?.id || "").trim();
+            const title = String(t?.title || "").trim();
+            if (!id || !title) continue;
+            if (!byId.has(id)) continue;
+            // 只收合理长度的标题，防止模型吐长句
+            if (title.length > 40) continue;
+            titleFixes.set(id, title);
+          }
+        }
       } catch (err: any) {
         console.warn(
           `[ActivitySummarizer] 全局主题归纳失败（${err?.message || err}），回退到本地聚类`
@@ -466,6 +493,22 @@ ${JSON.stringify(chunk, null, 2)}`;
     }
 
     if (merged.size === 0) return null;
+
+    // 应用全局归纳给出的标题修正：就地改内存对象 + 写库
+    // 病根：analysis_title 是逐会话生成的，只看得到单段活动，易被侧边栏/历史里的
+    // 项目名带偏（例：在 AI 对话里修 Otus，侧边栏列出 dsh-market，标题就写成了
+    // 「修复 dsh-market 菜单栏图标崩溃」）。全局视角能结合前后文纠正。
+    for (const [id, title] of titleFixes) {
+      const s = byId.get(id);
+      if (!s) continue;
+      if ((s.row.analysisTitle || "") === title) continue;
+      s.row.analysisTitle = title;
+      try {
+        this.store.updateSessionTitle(s.row.id, title);
+      } catch (err: any) {
+        console.warn(`[ActivitySummarizer] 回写标题失败（${s.row.id}）：${err?.message || err}`);
+      }
+    }
 
     // 校验：LLM 只能使用给定编号，且每个编号只能出现一次
     const assigned = new Set<string>();
