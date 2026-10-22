@@ -1,0 +1,15 @@
+{
+  "name": "otus-dsh-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Otus local work-journal command plugin for the DeepSeek Harness",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "~4.0.4",
+    "@deepseek-ai/dsh-commands": "0.2.0-rc.2"
+  }
+}

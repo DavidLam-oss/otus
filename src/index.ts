@@ -297,12 +297,41 @@ async function main() {
     case "export": {
       const dateKey = resolveDateKey(args[1] && !args[1].startsWith("--") ? args[1] : undefined);
       const force = args.includes("--force");
+
+      // 生成报告前先补齐未分析的会话。
+      // 背景：generateDailyReport 只读取 analysis_status='analyzed' 的会话，
+      // pending 的会被静默丢弃——用户看到的就是「最近的折腾没出现在报告里」。
+      const targetDay = dateKey || getLocalDateKey();
+      const [ty, tm, td] = targetDay.split("-").map(Number);
+      const dayStart = new Date(ty, tm - 1, td, 0, 0, 0, 0).getTime();
+      const dayEnd = new Date(ty, tm - 1, td + 1, 0, 0, 0, 0).getTime();
+      const pendingInDay = store.listSessions({
+        since: dayStart,
+        until: dayEnd,
+        analysisStatus: "pending",
+        limit: 500
+      });
+      if (pendingInDay.length > 0) {
+        // 进度回显到 stderr，供菜单栏/终端实时感知
+        console.error(`PROGRESS 正在补齐 ${pendingInDay.length} 个未分析会话…`);
+        const analyzer = new ActivityAnalyzer(store, defaultConfig);
+        let done = 0;
+        while (done < pendingInDay.length) {
+          const res = await analyzer.runOnce({ limit: 20 });
+          if (res.processed === 0) break;
+          done += res.processed;
+          console.error(`PROGRESS 分析进度 ${Math.min(done, pendingInDay.length)}/${pendingInDay.length}`);
+        }
+      }
+
+      console.error(`PROGRESS 正在生成报告…`);
       const renderer = new ReportRenderer(store, defaultConfig);
       const { outputPath } = await renderer.renderHtmlReport(dateKey, { force });
       console.log(`[Otus] HTML Report generated: ${outputPath}`);
       try {
         execSync(`open "${outputPath}"`);
       } catch {}
+      console.error(`PROGRESS 完成`);
       break;
     }
 

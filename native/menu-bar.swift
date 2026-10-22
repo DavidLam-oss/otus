@@ -1,11 +1,19 @@
 import Cocoa
 import Foundation
+import UserNotifications
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var statusItem: NSStatusItem!
     var statusTimer: Timer?
     var statusMenuItem: NSMenuItem!
+    var todayMenuItem: NSMenuItem!
+    var analyzeMenuItem: NSMenuItem!
     var settingsController: SettingsWindowController?
+    // 任务进行中标志：进行中时菜单栏显示进度、禁止重复触发
+    var busyTask: String? = nil
+    var spinnerTimer: Timer?
+    var spinnerFrames = ["◐", "◓", "◑", "◒"]
+    var spinnerIndex = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -81,10 +89,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
 
         // 快捷操作
-        let todayItem = NSMenuItem(title: "查看今日实时心流 (Today)", action: #selector(openToday), keyEquivalent: "t")
+        let todayItem = NSMenuItem(title: "生成今日报告 (Today)", action: #selector(openToday), keyEquivalent: "t")
         todayItem.target = self
         todayItem.image = NSImage(systemSymbolName: "chart.bar", accessibilityDescription: nil)
         menu.addItem(todayItem)
+        self.todayMenuItem = todayItem
 
         let yesterdayItem = NSMenuItem(title: "查看昨日折腾日记 (Yesterday)", action: #selector(openYesterday), keyEquivalent: "y")
         yesterdayItem.target = self
@@ -98,10 +107,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
 
-        let analyzeItem = NSMenuItem(title: "立即分析最新活动 (Analyze)", action: #selector(runAnalyze), keyEquivalent: "r")
+        let analyzeItem = NSMenuItem(title: "补齐未分析会话 (Analyze)", action: #selector(runAnalyze), keyEquivalent: "r")
         analyzeItem.target = self
         analyzeItem.image = NSImage(systemSymbolName: "arrow.clockwise", accessibilityDescription: nil)
         menu.addItem(analyzeItem)
+        self.analyzeMenuItem = analyzeItem
 
         menu.addItem(NSMenuItem.separator())
 
@@ -120,6 +130,116 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
+    // MARK: - 任务进度反馈
+    // 生成报告需要多次调用大模型（补齐分析 + 主题归纳 + 洞察 + 润色），
+    // 期间可能十几秒没有反应。用图标跑马灯 + 菜单项文字变化给出明确反馈，
+    // 避免用户以为点击没生效而反复点击。
+
+    private func beginBusy(_ label: String) {
+        busyTask = label
+        statusItem.button?.title = ""
+        spinnerIndex = 0
+        // 图标区显示跑马灯
+        if let button = statusItem.button {
+            button.image = nil
+            button.imagePosition = .noImage
+            button.title = spinnerFrames[0]
+            button.font = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        }
+        // 菜单里对应的项改为「进行中…」并禁用以防重复触发
+        todayMenuItem?.isEnabled = false
+        analyzeMenuItem?.isEnabled = false
+        statusMenuItem.title = "状态：\(label)…"
+        statusMenuItem.image = NSImage(systemSymbolName: "hourglass", accessibilityDescription: nil)
+
+        spinnerTimer?.invalidate()
+        spinnerTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            guard let self = self else { return }
+            self.spinnerIndex = (self.spinnerIndex + 1) % self.spinnerFrames.count
+            self.statusItem.button?.title = self.spinnerFrames[self.spinnerIndex]
+        }
+    }
+
+    private func endBusy(success: Bool, message: String) {
+        busyTask = nil
+        spinnerTimer?.invalidate()
+        spinnerTimer = nil
+        // 恢复图标
+        if let button = statusItem.button {
+            button.title = ""
+            if let icon = getStatusIcon() {
+                button.image = icon
+                button.imagePosition = .imageOnly
+            } else {
+                button.title = "Otus"
+            }
+        }
+        todayMenuItem?.isEnabled = true
+        analyzeMenuItem?.isEnabled = true
+
+        // 系统通知：任务完成/失败时给出明确结果
+        let content = UNMutableNotificationContent()
+        content.title = success ? "Otus" : "Otus 出错了"
+        content.body = message
+        if !success { content.sound = .default }
+        let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
+        UNUserNotificationCenter.current().add(req, withCompletionHandler: nil)
+
+        updateStatus()
+    }
+
+    /// 运行 otus 子命令，实时读取 stderr 里的 PROGRESS 行更新菜单状态。
+    private func runOtusTask(label: String, arguments: [String], completion: @escaping (Bool, String) -> Void) {
+        guard busyTask == nil else { return }
+        beginBusy(label)
+
+        let bin = getOtusBin()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            let task = Process()
+            task.executableURL = URL(fileURLWithPath: bin)
+            task.arguments = arguments
+
+            let pipe = Pipe()
+            task.standardError = pipe
+            task.standardOutput = Pipe()
+
+            // 逐行读取 stderr，遇到 PROGRESS 前缀就更新菜单文案
+            var lastLine = ""
+            pipe.fileHandleForReading.readabilityHandler = { handle in
+                let data = handle.availableData
+                guard !data.isEmpty, let text = String(data: data, encoding: .utf8) else { return }
+                for raw in text.split(separator: "\n") {
+                    let line = String(raw).trimmingCharacters(in: .whitespaces)
+                    if line.hasPrefix("PROGRESS ") {
+                        let msg = String(line.dropFirst("PROGRESS ".count))
+                        lastLine = msg
+                        DispatchQueue.main.async {
+                            self?.statusMenuItem.title = "状态：\(msg)"
+                        }
+                    }
+                }
+            }
+
+            var ok = false
+            do {
+                try task.run()
+                task.waitUntilExit()
+                ok = (task.terminationStatus == 0)
+            } catch {
+                ok = false
+            }
+            pipe.fileHandleForReading.readabilityHandler = nil
+
+            DispatchQueue.main.async {
+                let msg = ok
+                    ? (lastLine.isEmpty ? "\(label)完成" : lastLine)
+                    : "\(label)失败，请查看日志"
+                self?.endBusy(success: ok, message: msg)
+                completion(ok, msg)
+            }
+        }
+    }
+
     private func updateStatus() {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let pidPath = "\(home)/.otus/otus.pid"
@@ -136,13 +256,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func openToday() {
-        let bin = getOtusBin()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: bin)
-            task.arguments = ["export"]
-            try? task.run()
-        }
+        // 生成报告：会先补齐未分析会话，再聚类 + LLM 润色，耗时较长，带进度反馈
+        runOtusTask(label: "生成报告中", arguments: ["export"]) { _, _ in }
     }
 
     @objc func openYesterday() {
@@ -162,13 +277,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func runAnalyze() {
-        let bin = getOtusBin()
-        DispatchQueue.global(qos: .userInitiated).async {
-            let task = Process()
-            task.executableURL = URL(fileURLWithPath: bin)
-            task.arguments = ["analyze"]
-            try? task.run()
-        }
+        // 补齐分析：只分析不入报告，同样可能耗时，带进度反馈
+        runOtusTask(label: "补齐分析中", arguments: ["analyze"]) { _, _ in }
     }
 
     @objc func openSettings() {
