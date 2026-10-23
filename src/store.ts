@@ -390,9 +390,18 @@ export class ActivityStore {
     //   - veryShortSwitches: 停留 < 5 秒就切走（扫一眼就走）
     //   - avgDwellMs: 每次切换后的平均停留时长
     //   - distinctApps: 本会话触碰过的不同 App 数
-    //   - dominantAppShare: 主 App 占用的焦点轮次比例（越集中越说明在专注）
+    //   - dominantAppShare: 主 App 占用的**时长**比例（越集中越说明在专注）
+    //
+    // 注意 dominantAppShare 的口径曾是「焦点轮次占比」（topVisits/totalVisits），
+    // 但它与实测不符：Chrome 停 30 秒看效果 + 编辑器停 60 秒改代码循环时，
+    // Chrome 轮次更多，会得出「主 App 是 Chrome」的误导结论。
+    // summarizer 提示词里「dominantAppShare 低才可能是真碎片」也正基于时长直觉，
+    // 所以这里必须按停留时长算。
     const appVisitCount = new Map<string, number>();
+    const appDwellMs = new Map<string, number>();
     const switchTimestamps: number[] = [];
+    let lastFocusKeyForDwell: string | null = null;
+    let lastFocusTsForDwell = 0;
     let revisitSwitches = 0;
     let newAppSwitches = 0;
     let lastFocusTs = 0;
@@ -420,6 +429,18 @@ export class ActivityStore {
       const seen = appVisitCount.get(key) ?? 0;
       appVisitCount.set(key, seen + 1);
 
+      // 时长累加：把「上一个 App 从它被聚焦到此刻」这一整段记给它。
+      // 首条 app_focus 只有时间戳、没有上一段，故从第二条开始累计；
+      // 会话尾段（最后一次切换 → ended_at）在循环外补。
+      if (lastFocusKeyForDwell !== null && ev.timestamp > lastFocusTsForDwell) {
+        appDwellMs.set(
+          lastFocusKeyForDwell,
+          (appDwellMs.get(lastFocusKeyForDwell) ?? 0) + (ev.timestamp - lastFocusTsForDwell)
+        );
+      }
+      lastFocusKeyForDwell = key;
+      lastFocusTsForDwell = ev.timestamp;
+
       if (lastFocusKey !== null && key !== lastFocusKey) {
         focusSwitches++;
         if (seen > 0) revisitSwitches++;
@@ -436,15 +457,41 @@ export class ActivityStore {
     }
 
     const distinctApps = appVisitCount.size;
-    let topVisits = 0;
-    let totalVisits = 0;
-    for (const v of appVisitCount.values()) {
-      totalVisits += v;
-      if (v > topVisits) topVisits = v;
+    // 尾段补齐：最后一次聚焦到会话结束的时长记给最后那个 App。
+    if (lastFocusKeyForDwell !== null) {
+      const sessionEnd = sess.endedAt ?? sess.startedAt + (sess.durationMs ?? 0);
+      if (sessionEnd > lastFocusTsForDwell) {
+        appDwellMs.set(
+          lastFocusKeyForDwell,
+          (appDwellMs.get(lastFocusKeyForDwell) ?? 0) + (sessionEnd - lastFocusTsForDwell)
+        );
+      }
     }
-    const dominantAppShare = totalVisits > 0 ? Math.round((topVisits / totalVisits) * 100) / 100 : 0;
-    const avgDwellMs = switchTimestamps.length > 0
-      ? Math.round((sess.durationMs ?? 0) / (switchTimestamps.length + 1))
+    let topDwell = 0;
+    let totalDwell = 0;
+    for (const v of appDwellMs.values()) {
+      totalDwell += v;
+      if (v > topDwell) topDwell = v;
+    }
+    // 时长口径；无任何时长数据时退回轮次口径，避免全 0。
+    let dominantAppShare: number;
+    if (totalDwell > 0) {
+      dominantAppShare = Math.round((topDwell / totalDwell) * 100) / 100;
+    } else {
+      let topVisits = 0;
+      let totalVisits = 0;
+      for (const v of appVisitCount.values()) {
+        totalVisits += v;
+        if (v > topVisits) topVisits = v;
+      }
+      dominantAppShare = totalVisits > 0 ? Math.round((topVisits / totalVisits) * 100) / 100 : 0;
+    }
+    // 平均停留：用真实累计的 App 停留时长 ÷ 聚焦段数。
+    // 旧实现是 durationMs / (switchTimestamps.length + 1)，分母只在
+    // lastFocusTs > 0 时才 +1，首段漏计；且 durationMs 含首段空闲，
+    // 会让结果系统性偏大。改用 appDwellMs 的真实累计值。
+    const avgDwellMs = appDwellMs.size > 0
+      ? Math.round(totalDwell / appDwellMs.size)
       : (sess.durationMs ?? 0);
 
     const activeSeconds = Math.max(0, Math.round((sess.durationMs ?? 0) / 1000));

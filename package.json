@@ -11,7 +11,8 @@
     "start": "node --experimental-strip-types src/index.ts daemon",
     "status": "node --experimental-strip-types src/index.ts status",
     "report": "node --experimental-strip-types src/index.ts report",
-    "export": "node --experimental-strip-types src/index.ts export"
+    "export": "node --experimental-strip-types src/index.ts export",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "engines": {
     "node": ">=22.0.0"

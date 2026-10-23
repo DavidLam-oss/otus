@@ -721,7 +721,7 @@ ${JSON.stringify(chunk, null, 2)}`;
         topics,
         totalMs,
         displayName: name,
-        themeLines: lines && lines.length ? lines : undefined
+        themeLines: lines?.length ? lines : undefined
       } as ThemeCluster);
     }
 
@@ -1004,22 +1004,33 @@ ${JSON.stringify(chunk, null, 2)}`;
       // 把「注册 Webhook / 删旧 Webhook / 改脚本域名」这类同一件事的不同
       // 侧面合并成一条，比任何字符串相似度算法都准）。
       // 只有 LLM 归纳失败、回退到本地聚类时才用 highlights + 字符串去重兜底。
-      let highlights: string[];
-      if (c.themeLines && c.themeLines.length) {
-        highlights = c.themeLines;
-      } else {
-        const rawHighlights: string[] = [];
-        for (const s of c.sessions) {
-          for (const h of s.row.highlights || []) {
-            if (!rawHighlights.includes(h)) rawHighlights.push(h);
-          }
-        }
-        highlights = this.dedupeHighlights(rawHighlights);
+      //
+      // 注意 themeLines 装的是 THEME 输出的 narrative —— 一整段连贯叙述，
+      // 不是「要点」。之前直接当 bullet 渲染，导致骨架里出现
+      // `- <90 多字的一整段>`，既不是要点也不好看。
+      // 现在按语义分开：themeLines 渲染成首段正文（不加 -），
+      // 要点仍走会话自带的 highlights。
+      const themeNarrative = (c.themeLines || [])
+        .map((t) => String(t || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (themeNarrative) {
+        lines.push(themeNarrative);
+        lines.push("");
       }
+
+      const rawHighlights: string[] = [];
+      for (const s of c.sessions) {
+        for (const h of s.row.highlights || []) {
+          if (!rawHighlights.includes(h)) rawHighlights.push(h);
+        }
+      }
+      const highlights = this.dedupeHighlights(rawHighlights);
       if (highlights.length) {
         for (const h of highlights) {
           lines.push(`- ${h}`);
         }
+        lines.push("");
       }
 
       // 结果性产出：只在有「合并/发布」这类明确成果时补一句
@@ -1034,9 +1045,10 @@ ${JSON.stringify(chunk, null, 2)}`;
         if (vers.length) outcomes.push(`涉及版本 ${vers.join("、")}`);
       }
       // commits 原先只入库、无消费方，等于白付 token，这里接进「成果」行。
-      // 注意 people 不要接：OCR 里出现的任何名字（群成员、昵称、文件名片段）
-      // 都会被 LLM 当成人名抓出来，接进报告就是噪音。实测一轮就冒出
-      // Jay / 林大友 / m00806 / davidlin 四个假协作者，故明确不做。
+      // 注意 people 不要接进「成果」行：OCR 里出现的任何名字（群成员、昵称、
+      // 文件名片段）都会被 LLM 当成人名抓出来，实测一轮就冒出
+      // Jay / 林大友 / m00806 / davidlin 四个假协作者。
+      // （people 在 buildSkeleton 的会话明细行里仍按 handle 展示，那里是逐会话原文，可信度更高。）
       const commitLabels = new Set<string>();
       for (const cm of c.entities.commits || []) {
         const label = String(cm?.ref || cm?.label || "").trim();

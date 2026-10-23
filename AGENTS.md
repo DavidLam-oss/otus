@@ -124,7 +124,10 @@ for (const f of ["src/analyzer.ts","src/summarizer.ts"]) {
 
 ### 3.5 改动提示词后的验证流程
 
-1. 类型检查通过；
+1. **类型检查通过**：`npm run typecheck`（即 `tsc -p tsconfig.json`）。
+   需要先装类型依赖（不进 `package.json` 的 dependencies，`node_modules` 已被 gitignore）：
+   `npm i --no-save --no-package-lock typescript@5 @types/node@22`
+   唯一的已知噪音：`src/store.ts` 里 `bun:sqlite` 缺类型声明（历史遗留，未使用）；
 2. 用真实数据跑一次 `otus report today --force`，人工核对主题名与叙述是否准确；
 3. 特别检查是否出现评判性结论（如「没干正事」「注意力被切碎」）——
    报告只陈述事实与产出，不做人格或效率评判；

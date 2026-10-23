@@ -790,7 +790,7 @@ export class ActivityRecorderService {
       if (!fs.existsSync(tmpPath)) return;
 
       // 1.1 压缩策略：macOS 原生 sips 等比缩放至最大 2560 宽、质量 55（对齐 Alma）。
-      // Alma: max_width=2560, quality=jpegQuality/100=0.55 → 落盘约 300KB/张。
+      // Alma: max_width=2560, quality=jpegQuality/100=0.55 → 实测 300 张均值约 250KB/张（随画面复杂度 48KB–643KB 波动）。
       // 降到 1280/40 会让 12px 系统字号缩到 6px，OCR 对中文小字识别率明显下降，
       // 视觉模型也读不清界面正文。判重走独立的 160×90 内存缩略图，不受此值影响。
       try {

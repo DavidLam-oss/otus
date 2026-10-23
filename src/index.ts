@@ -258,7 +258,31 @@ async function main() {
 
     case "analyze": {
       const all = args.includes("--all");
-      console.log(`[Otus] Running micro-session analyzer${all ? " (processing all pending and failed sessions)" : ""}...`);
+      // 支持 `analyze 2026-10-23`：把当天所有会话重置为 pending 再重跑。
+      // 之前帮助里写着 [dateKey] 但代码完全忽略它，用户会以为重跑了当天，
+      // 实际只是跑了一批 pending —— 是用户可见的功能谎言。
+      const dateArg = args.slice(1).find((a) => !a.startsWith("--"));
+      const dateKey = dateArg ? resolveDateKey(dateArg) : undefined;
+      if (dateArg && !dateKey) {
+        console.error(`[Otus] 日期格式无效：${dateArg}（应为 YYYY-MM-DD 或 today）`);
+        process.exitCode = 1;
+        break;
+      }
+
+      if (dateKey) {
+        const [y, m, d] = dateKey.split("-").map(Number);
+        const dayStart = new Date(y, m - 1, d, 0, 0, 0, 0).getTime();
+        const dayEnd = new Date(y, m - 1, d + 1, 0, 0, 0, 0).getTime();
+        const daySessions = store.listSessions({ since: dayStart, until: dayEnd, limit: 2000 });
+        if (daySessions.length === 0) {
+          console.log(`[Otus] ${dateKey} 没有会话记录。`);
+          break;
+        }
+        for (const s of daySessions) store.resetSessionAnalysis(s.id);
+        console.log(`[Otus] ${dateKey}：已重置 ${daySessions.length} 个会话为 pending，开始重新分析...`);
+      } else {
+        console.log(`[Otus] Running micro-session analyzer${all ? " (processing all pending and failed sessions)" : ""}...`);
+      }
       const analyzer = new ActivityAnalyzer(store, defaultConfig);
 
       let totalProcessed = 0;
@@ -266,12 +290,13 @@ async function main() {
       let totalFailed = 0;
 
       while (true) {
-        const res = await analyzer.runOnce({ limit: all ? 50 : 20 });
+        // 指定日期时跑到底（当天全部分析完），否则沿用原来的单批/--all 语义。
+        const res = await analyzer.runOnce({ limit: all || dateKey ? 50 : 20 });
         totalProcessed += res.processed;
         totalAnalyzed += res.analyzed;
         totalFailed += res.failed;
 
-        if (res.processed === 0 || !all) break;
+        if (res.processed === 0 || (!all && !dateKey)) break;
         console.log(`[Otus] Progress: ${totalAnalyzed} analyzed, ${totalProcessed} processed...`);
       }
 
@@ -289,13 +314,21 @@ async function main() {
       const days = Number(args[1] && !args[1].startsWith("--") ? args[1] : 7);
       const since = Date.now() - days * 24 * 3600 * 1000;
       // listSessions 把 limit 钳在 2000，长历史要分页扫完，不能只处理第一批。
+      //
+      // 游标必须用 >= 而不是 >：同一毫秒可能有多条会话，若用 lastAt + 1，
+      // 同毫秒但没挤进本批的那些会被永久跳过（静默漏算）。
+      // 用 >= 会让边界上的会话重复计算一次——updateSessionSignals 是幂等的，代价可忽略。
+      const seenIds = new Set<string>();
       let done = 0;
-      let scanned = 0;
       let cursor: number = since;
       for (;;) {
         const batch = store.listSessions({ since: cursor, limit: 2000 });
         if (batch.length === 0) break;
+        let fresh = 0;
         for (const s of batch) {
+          if (seenIds.has(s.id)) continue;
+          seenIds.add(s.id);
+          fresh++;
           try {
             store.updateSessionSignals(s.id);
             done++;
@@ -303,14 +336,16 @@ async function main() {
             console.warn(`[Otus] 会话 ${s.id} 信号重算失败：`, String((e as any)?.message || e));
           }
         }
-        scanned += batch.length;
         const lastAt = Number(batch[batch.length - 1].startedAt);
-        // 没有推进（同毫秒多条）时强制 +1，避免死循环
-        cursor = lastAt > cursor ? lastAt + 1 : cursor + 1;
+        if (lastAt < cursor) break;
+        // 本批没有任何新会话，说明游标卡在同一毫秒且已取尽，退出。
+        if (fresh === 0) break;
+        cursor = lastAt;
         if (cursor > Date.now()) break;
         if (batch.length < 2000) break;
       }
-      console.log(`[Otus] 已重算 ${done}/${scanned} 个会话的行为信号（近 ${days} 天）`);
+      // scanned 含游标边界上被重复取到的会话，故用 seenIds.size 作为去重后的真实总数。
+      console.log(`[Otus] 已重算 ${done}/${seenIds.size} 个会话的行为信号（近 ${days} 天）`);
       break;
     }
 

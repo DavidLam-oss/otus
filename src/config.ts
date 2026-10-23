@@ -92,7 +92,7 @@ export interface OtusConfig {
   // 为什么从 1280/40 提到 2560/55：1280 宽下 12px 系统字号缩到 6px，
   // OCR 对中文小字识别率明显下降，视觉模型也读不清界面正文。
   // Alma 的 native shotDisplay 用 max_width=2560、quality=jpegQuality/100=0.55，
-  // 落盘约 300KB/张。判重仍走独立的 160×90 内存缩略图，不受此值影响。
+  // 实测 300 张均值约 250KB/张（随画面复杂度 48KB–643KB 波动）。判重仍走独立的 160×90 内存缩略图，不受此值影响。
   snapshotMaxWidth: number;
   snapshotQuality: number;
 

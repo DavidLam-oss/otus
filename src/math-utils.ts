@@ -132,7 +132,10 @@ export function hacCluster(
   if (n === 0) return [];
   if (n === 1) return [{ members: [0] }];
 
-  // 默认切割距离（= 1 - 相似度 0.28 的等价切割）；实际生效值由 config.clusterCutDistance 注入。
+  // 默认切割距离 0.72（= 1 - 相似度 0.28 的等价切割）。
+  // 注意：正常运行路径一定由 config.clusterCutDistance 注入（默认 0.62，
+  // 即相似度 ≈0.38 以上倾向同簇）。这里的 0.72 只是直接调用本函数时的兜底，
+  // 比 config 更保守（更不容易把两条会话并成一簇），两者差 0.10 不是笔误。
   const cut = opts.cutDistance ?? 0.72;
   const beta = opts.timeBeta ?? 0;
   const tau = opts.timeTau ?? 30 * 60 * 1000;
