@@ -13,6 +13,53 @@ interface FrontmostApp {
   appName: string;
 }
 
+/**
+ * 读 JPEG/PNG 的像素宽高，不调用外部进程（sips 要 fork，单张 ~30ms）。
+ *
+ * JPEG：扫 SOF0/SOF1/SOF2 段拿 height/width。
+ * PNG：IHDR 固定在第 8-24 字节。
+ * 解析失败返回 0x0 —— 调用方（三级轮转）对 0 尺寸是容错的，
+ * 只是少一次「是否超框」的提前判断，不影响功能。
+ */
+function readImageSize(filePath: string): { width: number; height: number } {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const head = Buffer.alloc(32);
+    fs.readSync(fd, head, 0, 32, 0);
+
+    // PNG: 89 50 4E 47 | ... | IHDR 在第 16 字节起，宽高各 4 字节大端
+    if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+      fs.closeSync(fd);
+      return { width: head.readUInt32BE(16), height: head.readUInt32BE(20) };
+    }
+
+    // JPEG: FF D8 开头，向后找 SOF 标记（C0-CF，排除 C4/C8/CC 这三个非 SOF 标记）
+    const buf = Buffer.alloc(65536);
+    const n = fs.readSync(fd, buf, 0, 65536, 0);
+    fs.closeSync(fd);
+    if (buf[0] !== 0xff || buf[1] !== 0xd8) return { width: 0, height: 0 };
+
+    let i = 2;
+    while (i + 9 < n) {
+      if (buf[i] !== 0xff) { i++; continue; }
+      const marker = buf[i + 1];
+      if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
+        return { height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) };
+      }
+      if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        i += 2; // 无长度字段的独立标记
+        continue;
+      }
+      const segLen = buf.readUInt16BE(i + 2);
+      if (segLen < 2) return { width: 0, height: 0 };
+      i += 2 + segLen;
+    }
+    return { width: 0, height: 0 };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
+
 export class ActivityRecorderService {
   private store: ActivityStore;
   private config: OtusConfig;
@@ -822,9 +869,14 @@ export class ActivityRecorderService {
       }
 
       // 4. 插入快照记录
+      //    宽高取自压缩后的真实文件（三级轮转按尺寸判断是否需要降级重压，
+      //    写 0 会让 rotate 无法判断，历史上这里一直漏传导致全是 0x0）
+      const dims = readImageSize(finalPath);
       const snapId = this.store.insertSnapshot(session.id, {
         timestamp: Date.now(),
         filePath: finalPath,
+        width: dims.width,
+        height: dims.height,
         sizeBytes: stat.size,
         trigger,
         appName: frontmostSnap.appName,
