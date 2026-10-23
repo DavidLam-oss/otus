@@ -742,11 +742,14 @@ export class ActivityRecorderService {
       execSync(`screencapture -x -C -t jpg "${tmpPath}"`, { stdio: "ignore" });
       if (!fs.existsSync(tmpPath)) return;
 
-      // 1.1 压缩策略：macOS 原生 sips 极速等比缩放至最大 1280，质量 40 (单张体积从 5MB 骤降至 40~60KB，耗时 < 15ms)
+      // 1.1 压缩策略：macOS 原生 sips 等比缩放至最大 2560 宽、质量 55（对齐 Alma）。
+      // Alma: max_width=2560, quality=jpegQuality/100=0.55 → 落盘约 300KB/张。
+      // 降到 1280/40 会让 12px 系统字号缩到 6px，OCR 对中文小字识别率明显下降，
+      // 视觉模型也读不清界面正文。判重走独立的 160×90 内存缩略图，不受此值影响。
       try {
         execSync(
           `sips -Z ${this.config.snapshotMaxWidth} -s formatOptions ${this.config.snapshotQuality} "${tmpPath}" --out "${tmpPath}"`,
-          { stdio: "ignore", timeout: 2000 }
+          { stdio: "ignore", timeout: 3000 }
         );
       } catch {}
 

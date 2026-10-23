@@ -24,6 +24,24 @@ export interface OtusConfig {
   binDir: string;
   tmpDir: string;
   maxStorageBytes: number;
+  targetStorageBytes: number;   // 容量兜底清理的目标水位
+
+  // 三级生命周期保留期（对齐 Alma Vq）
+  hotRetentionMs: number;
+  warmRetentionMs: number;
+  coldRetentionMs: number;
+
+  // warm 层重压缩参数（7 天后）
+  warmRecompressEnabled: boolean;
+  warmRecompressMaxWidth: number;
+  warmRecompressMaxHeight: number;
+  warmRecompressQuality: number;
+
+  // cold 层重压缩参数（30 天后）
+  coldRecompressEnabled: boolean;
+  coldRecompressMaxWidth: number;
+  coldRecompressMaxHeight: number;
+  coldRecompressQuality: number;
 
   enableInputMonitor: boolean;
   snapshotDebounceMs: number;
@@ -70,7 +88,11 @@ export interface OtusConfig {
   ocrDedupThreshold: number;  // 相邻文本相似度超过该值视为重复
   maxOcrFrames: number;       // 最多读取的 OCR 帧数
 
-  // 截图压缩配置 (1280 宽度 + 40 质量，体积缩减 98%)
+  // 截图压缩配置（对齐 Alma：2560 宽 + 质量 55）
+  // 为什么从 1280/40 提到 2560/55：1280 宽下 12px 系统字号缩到 6px，
+  // OCR 对中文小字识别率明显下降，视觉模型也读不清界面正文。
+  // Alma 的 native shotDisplay 用 max_width=2560、quality=jpegQuality/100=0.55，
+  // 落盘约 300KB/张。判重仍走独立的 160×90 内存缩略图，不受此值影响。
   snapshotMaxWidth: number;
   snapshotQuality: number;
 
@@ -98,7 +120,23 @@ export const baseConfig: OtusConfig = {
   snapshotsDir: SNAPSHOTS_DIR,
   binDir: BIN_DIR,
   tmpDir: TMP_DIR,
-  maxStorageBytes: 10 * 1024 * 1024 * 1024, // 10GB 磁盘存储硬上限，达到自动 FIFO 轮转清理旧截图
+  maxStorageBytes: 10 * 1024 * 1024 * 1024,   // 10GB 磁盘存储硬上限
+  targetStorageBytes: 7.5 * 1024 * 1024 * 1024, // 8GB 水位（Alma floor(8053063680)）
+
+  // 三级生命周期（对齐 Alma Vq：hotRetentionMs / warmRetentionMs / coldRetentionMs）
+  hotRetentionMs: 86400000,      // 1 天：原图
+  warmRetentionMs: 604800000,    // 7 天：降到 1280×720@40
+  coldRetentionMs: 2592000000,   // 30 天：降到 640×360@30，之后删文件保留 OCR 文本
+
+  warmRecompressEnabled: true,
+  warmRecompressMaxWidth: 1280,
+  warmRecompressMaxHeight: 720,
+  warmRecompressQuality: 40,
+
+  coldRecompressEnabled: true,
+  coldRecompressMaxWidth: 640,
+  coldRecompressMaxHeight: 360,
+  coldRecompressQuality: 30,
 
   enableInputMonitor: true,
   snapshotDebounceMs: 4000,       // 4s 抓拍防抖（对齐 Alma，原 1000ms 过密）
@@ -151,9 +189,9 @@ export const baseConfig: OtusConfig = {
   ocrDedupThreshold: 0.9,         // 相邻文本相似度 > 0.9 视为重复
   maxOcrFrames: 400,              // 对齐 Alma
 
-  // 截图压缩默认参数 (1280 宽度 + 40 质量)
-  snapshotMaxWidth: 1280,
-  snapshotQuality: 40,
+  // 截图压缩默认参数（对齐 Alma fG.jpegQuality=55；native shotDisplay max_width=2560）
+  snapshotMaxWidth: 2560,
+  snapshotQuality: 55,
 
   // 三级图像判重默认参数（对齐 Alma v0.4.193）
   histogramChangeThreshold: 0.05, // 32-bin 直方图巴氏距离阈值
@@ -224,9 +262,26 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     windowTitleBackoffMaxMs: atLeast(cfg.windowTitleBackoffMaxMs, 5000),
     windowTitleMaxFailures: roundTo(cfg.windowTitleMaxFailures, 16, 1, 20),
     ocrEveryN: roundTo(cfg.ocrEveryN, 1, 1, 10),
-    snapshotQuality: roundTo(cfg.snapshotQuality, 40, 30, 95),
-    snapshotMaxWidth: roundTo(cfg.snapshotMaxWidth, 1280, 320, 3840),
+    snapshotQuality: roundTo(cfg.snapshotQuality, 55, 30, 95),
+    snapshotMaxWidth: roundTo(cfg.snapshotMaxWidth, 2560, 320, 5120),
     maxStorageBytes: atLeast(cfg.maxStorageBytes, 512 * 1024 * 1024),
+    // 目标水位必须严格小于硬上限，否则一轮清理后立刻又会超限（死循环）
+    targetStorageBytes: Math.min(
+      atLeast(cfg.targetStorageBytes, 256 * 1024 * 1024),
+      Math.floor(atLeast(cfg.maxStorageBytes, 512 * 1024 * 1024) * 0.95)
+    ),
+    // 保留期必须单调递增：hot < warm < cold，否则 tier 会来回跳
+    hotRetentionMs: atLeast(cfg.hotRetentionMs, 3600000),
+    warmRetentionMs: Math.max(atLeast(cfg.warmRetentionMs, 86400000), atLeast(cfg.hotRetentionMs, 3600000) + 1),
+    coldRetentionMs: Math.max(atLeast(cfg.coldRetentionMs, 604800000), atLeast(cfg.warmRetentionMs, 86400000) + 1),
+    warmRecompressEnabled: cfg.warmRecompressEnabled !== false,
+    warmRecompressMaxWidth: roundTo(cfg.warmRecompressMaxWidth, 1280, 160, 4096),
+    warmRecompressMaxHeight: roundTo(cfg.warmRecompressMaxHeight, 720, 90, 4096),
+    warmRecompressQuality: roundTo(cfg.warmRecompressQuality, 40, 10, 95),
+    coldRecompressEnabled: cfg.coldRecompressEnabled !== false,
+    coldRecompressMaxWidth: roundTo(cfg.coldRecompressMaxWidth, 640, 160, 4096),
+    coldRecompressMaxHeight: roundTo(cfg.coldRecompressMaxHeight, 360, 90, 4096),
+    coldRecompressQuality: roundTo(cfg.coldRecompressQuality, 30, 10, 95),
     // 判重阈值必须落在合理区间：过小会误丢真实变化，过大会产生大量重复帧
     histogramChangeThreshold: clampFloat(cfg.histogramChangeThreshold, 0.05, 0.001, 0.5),
     pixelDiffThreshold: clampFloat(cfg.pixelDiffThreshold, 0.02, 0.001, 0.5),

@@ -640,6 +640,80 @@ export class ActivityStore {
     return id;
   }
 
+  // ── 分层存储（对齐 Alma 的 hot / warm / cold 三级轮转） ──
+  // 轮转器需要按 tier 取快照、降级、以及重压缩后回写尺寸与体积。
+
+  public listSnapshotsForTier(tier: "hot" | "warm" | "cold", limit: number = 500): Array<{
+    id: string;
+    filePath: string;
+    sizeBytes: number;
+    width: number;
+    height: number;
+    timestamp: number;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT id, file_path, size_bytes, width, height, timestamp
+      FROM activity_snapshots
+      WHERE storage_tier = ?
+      ORDER BY timestamp ASC
+      LIMIT ?
+    `).all(tier, limit) as any[];
+    return rows.map((r) => ({
+      id: r.id,
+      filePath: r.file_path,
+      sizeBytes: r.size_bytes || 0,
+      width: r.width || 0,
+      height: r.height || 0,
+      timestamp: r.timestamp
+    }));
+  }
+
+  public setSnapshotTier(id: string, tier: "hot" | "warm" | "cold"): void {
+    this.db.prepare(`UPDATE activity_snapshots SET storage_tier = ? WHERE id = ?`).run(tier, id);
+  }
+
+  /** 重压缩后回写：体积、像素尺寸、文件路径（png→jpg 时会变）与新的 tier */
+  public updateSnapshotAfterRecompress(
+    id: string,
+    info: { sizeBytes: number; width: number; height: number; filePath: string; tier: "hot" | "warm" | "cold" }
+  ): void {
+    const row = this.db.prepare(`SELECT size_bytes FROM activity_snapshots WHERE id = ?`).get(id) as any;
+    const oldSize = row?.size_bytes || 0;
+    this.db.prepare(`
+      UPDATE activity_snapshots
+      SET size_bytes = ?, width = ?, height = ?, file_path = ?, storage_tier = ?
+      WHERE id = ?
+    `).run(info.sizeBytes, info.width, info.height, info.filePath, info.tier, id);
+
+    // 同步会话的 total_bytes，让容量统计保持准确
+    const delta = info.sizeBytes - oldSize;
+    if (delta !== 0) {
+      this.db.prepare(`
+        UPDATE activity_sessions
+        SET total_bytes = MAX(0, total_bytes + ?)
+        WHERE id = (SELECT session_id FROM activity_snapshots WHERE id = ?)
+      `).run(delta, id);
+    }
+  }
+
+  public deleteSnapshot(id: string): void {
+    const row = this.db.prepare(`SELECT size_bytes, session_id FROM activity_snapshots WHERE id = ?`).get(id) as any;
+    this.db.prepare(`DELETE FROM activity_snapshots WHERE id = ?`).run(id);
+    if (row) {
+      this.db.prepare(`
+        UPDATE activity_sessions
+        SET total_bytes = MAX(0, total_bytes - ?)
+        WHERE id = ?
+      `).run(row.size_bytes || 0, row.session_id);
+    }
+  }
+
+  /** 全部快照文件的账面总占用（用于容量水位线判断） */
+  public totalStorageBytes(): number {
+    const row = this.db.prepare(`SELECT COALESCE(SUM(size_bytes), 0) AS total FROM activity_snapshots`).get() as any;
+    return row?.total || 0;
+  }
+
   public insertOcrFrame(snapshotId: string, sessionId: string, text: string): string {
     const id = `ocr_${crypto.randomUUID()}`;
     const now = Date.now();
