@@ -377,10 +377,10 @@ export class ActivityRecorderService {
   }
 
   /**
-   * 请求当前前台窗口的标题。带超时与退避：
+   * 请求指定 App 的焦点窗口标题。带超时与退避：
    *   - 无权限 / 连续失败时按指数退避（2s 起，封顶 60s），避免每次截图白跑 IPC
    *   - 超时 800ms（AX 跨进程调用正常情况下 <10ms，超时说明目标 App 卡死）
-   * 返回 null 表示取不到（无权限、无窗口、超时、退避中）。
+   * 返回 null 表示取不到（无权限、无窗口、App 已退出、超时、退避中、bundleId 不匹配）。
    */
   private async requestWindowTitle(bundleId: string): Promise<string | null> {
     if (this.windowTitleDisabled || !this.windowTitleProc) return null;
@@ -405,6 +405,12 @@ export class ActivityRecorderService {
         if (resp.ok) {
           this.windowTitleFailures = 0;
           this.windowTitleNextAllowedAt = 0;
+          // 双保险：即使 helper 侧已做精确匹配，这里再校验返回的 bundleId 与请求一致，
+          // 防止极端情况下（App 刚退出、bundleId 变更）把别的 App 的标题写进本快照。
+          if (resp.bundleId && resp.bundleId !== bundleId) {
+            done(null);
+            return;
+          }
           const title = (resp.title ?? "").trim();
           done(title || null);
         } else {

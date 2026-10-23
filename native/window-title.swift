@@ -96,22 +96,34 @@ while let line = readLine(strippingNewline: true) {
         continue
     }
 
-    // 确定目标 pid：显式 pid > bundleId 查前台匹配 > 当前前台 App
+    // 确定目标 pid：显式 pid > bundleId 精确匹配。
+    // 关键：显式给了 bundleId 时，绝不回退到「当前前台 App」——调用方记录的
+    // app_name 与请求时刻的前台可能因竞态而不同（例如快照记的是 System Settings，
+    // 请求发出时焦点已被别的 App 抢走），回退会造成标题张冠李戴。
+    // 宁可返回 ok=false（调用方留空 window_title），也不要写错标题。
     var pid: pid_t? = reqPid
-    if pid == nil, let bundle = reqBundle {
-        // 在运行中的 App 里找 bundleId 匹配的（优先前台）
-        if let front = NSWorkspace.shared.frontmostApplication,
-           front.bundleIdentifier == bundle {
-            pid = front.processIdentifier
-        } else {
-            for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == bundle {
-                pid = app.processIdentifier
-                break
-            }
-        }
-    }
     if pid == nil {
-        pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        if let bundle = reqBundle {
+            // 优先前台匹配，其次在运行中的 App 里找
+            if let front = NSWorkspace.shared.frontmostApplication,
+               front.bundleIdentifier == bundle {
+                pid = front.processIdentifier
+            } else {
+                for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == bundle {
+                    pid = app.processIdentifier
+                    break
+                }
+            }
+            guard let found = pid else {
+                // 该 App 已不在运行 / 无窗口，明确失败而不是回退前台
+                reply(["ok": false, "error": "app_not_running", "bundleId": bundle])
+                continue
+            }
+            _ = found
+        } else {
+            // 未指定 bundleId：允许取当前前台（交互式调用场景）
+            pid = NSWorkspace.shared.frontmostApplication?.processIdentifier
+        }
     }
     guard let targetPid = pid else {
         reply(["ok": false, "error": "no_frontmost_app"])
