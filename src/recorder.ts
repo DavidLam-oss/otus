@@ -72,12 +72,18 @@ export class ActivityRecorderService {
   private windowTitleProc: ChildProcess | null = null;
   private windowTitleBuffer: string = "";
   private windowTitleResolvers: Array<(v: { ok: boolean; title?: string; bundleId?: string; error?: string }) => void> = [];
-  // AX 权限缺失/连续失败时的退避：避免每次截图都白跑一次 IPC
-  private windowTitleFailures: number = 0;
-  private windowTitleNextAllowedAt: number = 0;
+  // AX 权限缺失/连续失败时的退避：避免每次截图都白跑一次 IPC。
+  // 按 bundleId 分桶：一个卡死 App 的超时不应把其它 App 的标题请求一起拖入长退避。
+  private windowTitleFailures: number = 0; // 全局（保留：仅用于辅助功能整体失败）
+  private windowTitleNextAllowedAt: number = 0; // 全局（保留：写失败等进程级故障）
+  private windowTitleFailuresByApp: Map<string, number> = new Map();
+  private windowTitleNextAllowedByApp: Map<string, number> = new Map();
   // 最近一次成功取到的窗口标题（供插入快照时使用）
   private lastWindowTitle: string | null = null;
   private windowTitleDisabled: boolean = false;
+  // helper 崩溃/被 kill 后的自动重启（指数退避，封顶 30s）
+  private windowTitleRestartTimer: NodeJS.Timeout | null = null;
+  private windowTitleRestartFailures: number = 0;
 
   public onSessionClosed?: (session: ActivitySession) => void;
   public onWake?: () => void;
@@ -321,6 +327,10 @@ export class ActivityRecorderService {
     try {
       const proc = spawn(this.windowTitleBinPath, [], { stdio: ["pipe", "pipe", "pipe"] });
       this.windowTitleProc = proc;
+      this.windowTitleBuffer = "";
+      this.windowTitleResolvers = [];
+      // 新进程起来后清零重启失败计数（连续多次崩溃才持续退避）
+      this.windowTitleRestartFailures = 0;
 
       proc.stdout?.on("data", (chunk: Buffer) => {
         this.windowTitleBuffer += chunk.toString("utf-8");
@@ -351,13 +361,18 @@ export class ActivityRecorderService {
         const pending = this.windowTitleResolvers;
         this.windowTitleResolvers = [];
         for (const r of pending) r({ ok: false, error: "helper_exited" });
-        if (this.isRunning && code !== 0 && code !== null) {
-          // 仅在"运行中且异常退出(非信号终止)"时告警；正常 stop 发 SIGTERM 时 code 为 null，不刷日志
-          console.warn(
-            `[ActivityRecorder] 窗口标题辅助进程异常退出 (code=${code})，windowTitle 将为 null。` +
-            `如需窗口标题，请在「系统设置 → 隐私与安全性 → 辅助功能」中授权这个 .app：` +
-            `${path.join(this.config.binDir, "OtusWindowTitle.app")}`
-          );
+        // 运行中且被非预期终止（kill -9 / 崩溃 / 内存回收）→ 退避自动重拉，
+        // 否则 windowTitle 会永久为 null 直到手动重启 daemon。
+        // 正常 stop() 发 SIGTERM 时 code 为 null 且 isRunning 已置 false，不触发重拉。
+        if (this.isRunning && !this.windowTitleDisabled) {
+          if (code !== 0 && code !== null) {
+            console.warn(
+              `[ActivityRecorder] 窗口标题辅助进程异常退出 (code=${code})，将退避重启。` +
+              `若持续失败，请在「系统设置 → 隐私与安全性 → 辅助功能」授权：` +
+              `${path.join(this.config.binDir, "OtusWindowTitle.app")}`
+            );
+          }
+          this.scheduleWindowTitleRestart();
         }
       });
     } catch (err) {
@@ -367,6 +382,10 @@ export class ActivityRecorderService {
   }
 
   private stopWindowTitleHelper(): void {
+    if (this.windowTitleRestartTimer) {
+      clearTimeout(this.windowTitleRestartTimer);
+      this.windowTitleRestartTimer = null;
+    }
     if (this.windowTitleProc) {
       try { this.windowTitleProc.kill("SIGTERM"); } catch {}
       this.windowTitleProc = null;
@@ -376,15 +395,31 @@ export class ActivityRecorderService {
     for (const r of pending) r({ ok: false, error: "stopped" });
   }
 
+  // helper 崩溃后被 kill -9 也会走 exit(code=null)，用 isRunning 区分正常 stop。
+  // 指数退避 500ms → 30s 封顶，连续崩溃不超过该间隔重拉。
+  private scheduleWindowTitleRestart(): void {
+    if (this.windowTitleRestartTimer) return; // 已有待执行的重启
+    this.windowTitleRestartFailures = Math.min(this.windowTitleRestartFailures + 1, 16);
+    const delay = Math.min(30000, 500 * Math.pow(2, this.windowTitleRestartFailures - 1));
+    this.windowTitleRestartTimer = setTimeout(() => {
+      this.windowTitleRestartTimer = null;
+      if (!this.isRunning || this.windowTitleDisabled) return;
+      this.startWindowTitleHelper();
+    }, delay);
+  }
+
   /**
    * 请求指定 App 的焦点窗口标题。带超时与退避：
-   *   - 无权限 / 连续失败时按指数退避（2s 起，封顶 60s），避免每次截图白跑 IPC
+   *   - 按 bundleId 分桶退避（2s 起，封顶 60s）：一个卡死 App 不拖垮其它 App；
+   *     app_not_running / no_window 等确定性失败不计入退避
    *   - 超时 800ms（AX 跨进程调用正常情况下 <10ms，超时说明目标 App 卡死）
    * 返回 null 表示取不到（无权限、无窗口、App 已退出、超时、退避中、bundleId 不匹配）。
    */
   private async requestWindowTitle(bundleId: string): Promise<string | null> {
     if (this.windowTitleDisabled || !this.windowTitleProc) return null;
-    if (Date.now() < this.windowTitleNextAllowedAt) return null;
+    // 全局退避（进程级故障，如 stdin 写失败）与按 App 退避取较晚者
+    const appNext = this.windowTitleNextAllowedByApp.get(bundleId) ?? 0;
+    if (Date.now() < Math.max(this.windowTitleNextAllowedAt, appNext)) return null;
 
     return new Promise<string | null>((resolve) => {
       let settled = false;
@@ -395,8 +430,8 @@ export class ActivityRecorderService {
       };
 
       const timer = setTimeout(() => {
-        // 超时：认为该 App 的 AX 响应异常，累计失败并退避
-        this.onWindowTitleFailure("timeout");
+        // 超时：认为该 App 的 AX 响应异常，累计该 App 失败并退避
+        this.onWindowTitleFailure(bundleId, "timeout");
         done(null);
       }, 800);
 
@@ -405,6 +440,8 @@ export class ActivityRecorderService {
         if (resp.ok) {
           this.windowTitleFailures = 0;
           this.windowTitleNextAllowedAt = 0;
+          this.windowTitleFailuresByApp.delete(bundleId);
+          this.windowTitleNextAllowedByApp.delete(bundleId);
           // 双保险：即使 helper 侧已做精确匹配，这里再校验返回的 bundleId 与请求一致，
           // 防止极端情况下（App 刚退出、bundleId 变更）把别的 App 的标题写进本快照。
           if (resp.bundleId && resp.bundleId !== bundleId) {
@@ -422,8 +459,12 @@ export class ActivityRecorderService {
               "如需补全，请在「系统设置 → 隐私与安全性 → 辅助功能」中授权这个 .app：" +
               path.join(this.config.binDir, "OtusWindowTitle.app")
             );
+          } else if (resp.error === "app_not_running" || resp.error === "no_window") {
+            // 确定性失败：App 无窗口 / 已退出。不计入退避，避免拖垮同批其它 App。
+            done(null);
+            return;
           } else {
-            this.onWindowTitleFailure(resp.error ?? "unknown");
+            this.onWindowTitleFailure(bundleId, resp.error ?? "unknown");
           }
           done(null);
         }
@@ -433,19 +474,30 @@ export class ActivityRecorderService {
         this.windowTitleProc!.stdin?.write(JSON.stringify({ bundleId }) + "\n");
       } catch (e) {
         clearTimeout(timer);
-        this.onWindowTitleFailure("write_failed");
+        this.onWindowTitleFailure(bundleId, "write_failed");
         done(null);
       }
     });
   }
 
-  private onWindowTitleFailure(reason: string): void {
-    this.windowTitleFailures = Math.min(this.windowTitleFailures + 1, 16);
-    // 500ms * 2^(n-1)，封顶 60s
-    const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, this.windowTitleFailures - 1)));
-    this.windowTitleNextAllowedAt = Date.now() + backoff;
-    if (this.windowTitleFailures <= 3) {
-      console.warn(`[ActivityRecorder] 取窗口标题失败(${this.windowTitleFailures}/16, ${reason})，${backoff}ms 后重试`);
+  private onWindowTitleFailure(bundleId: string, reason: string): void {
+    // write_failed 属进程级故障：走全局退避
+    if (reason === "write_failed") {
+      this.windowTitleFailures = Math.min(this.windowTitleFailures + 1, 16);
+      const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, this.windowTitleFailures - 1)));
+      this.windowTitleNextAllowedAt = Date.now() + backoff;
+      if (this.windowTitleFailures <= 3) {
+        console.warn(`[ActivityRecorder] 取窗口标题失败(${this.windowTitleFailures}/16, ${reason})，${backoff}ms 后重试`);
+      }
+      return;
+    }
+    // 按 App 分桶退避：2s * 2^(n-1)，封顶 60s
+    const n = Math.min((this.windowTitleFailuresByApp.get(bundleId) ?? 0) + 1, 16);
+    this.windowTitleFailuresByApp.set(bundleId, n);
+    const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, n - 1)));
+    this.windowTitleNextAllowedByApp.set(bundleId, Date.now() + backoff);
+    if (n <= 3) {
+      console.warn(`[ActivityRecorder] 取窗口标题失败(${bundleId} ${n}/16, ${reason})，${backoff}ms 后重试`);
     }
   }
 
@@ -684,9 +736,19 @@ export class ActivityRecorderService {
 
       // 3.5 取窗口标题（AXTitle，仅非浏览器 App；浏览器已通过 AppleScript 拿标题）。
       //     失败/无权限时为 null，不影响快照入库。请求被去抖到与截图同频，非轮询。
+      //
+      // ⚠️ 关键：此处先把 frontmost 快照到局部变量再 await。
+      //     requestWindowTitle 最长 await 800ms，期间 input-monitor 的 app_focus 事件
+      //     会改写 this.frontmost；若 await 后再读 this.frontmost 写 appName/title，
+      //     会出现「快照 appName 是 A、windowTitle 是 B」的张冠李戴（实测已复现）。
+      const frontmostSnap = { bundleId: this.frontmost.bundleId, appName: this.frontmost.appName };
       let windowTitle: string | null = null;
-      if (!this.isBrowserFrontmost()) {
-        windowTitle = await this.requestWindowTitle(this.frontmost.bundleId);
+      // 空 appName（daemon 刚启动、尚未收到首条 app_focus）时不发 AX 请求：
+      //   既省一次 IPC，也避免空 bundleId 在 helper 侧回退到「当前前台」而拿到别的 App 标题。
+      if (frontmostSnap.appName && !this.isBrowserAppName(frontmostSnap.appName)) {
+        windowTitle = await this.requestWindowTitle(frontmostSnap.bundleId);
+        // 标题入库前脱敏：窗口标题可能含文件路径/含密钥的编辑器标题等（与 OCR 路径一致）
+        if (windowTitle) windowTitle = redactSensitiveText(windowTitle).redacted || null;
         if (windowTitle) this.lastWindowTitle = windowTitle;
       }
 
@@ -696,7 +758,7 @@ export class ActivityRecorderService {
         filePath: finalPath,
         sizeBytes: stat.size,
         trigger,
-        appName: this.frontmost.appName,
+        appName: frontmostSnap.appName,
         windowTitle,
         hashHex
       });
@@ -707,7 +769,7 @@ export class ActivityRecorderService {
         this.store.insertEvent(session.id, {
           timestamp: Date.now(),
           kind: "window_title",
-          appName: this.frontmost.appName,
+          appName: frontmostSnap.appName,
           data: { title: windowTitle, source: "ax" }
         });
       }
@@ -791,8 +853,13 @@ export class ActivityRecorderService {
   }
 
   private isBrowserFrontmost(): boolean {
+    return this.isBrowserAppName(this.frontmost.appName);
+  }
+
+  // 判断给定 App 名是否属于浏览器（纯函数：不读 this.frontmost，供快照后判断用）。
+  private isBrowserAppName(appName: string): boolean {
     const browserNames = ["Google Chrome", "Safari", "Arc", "Brave Browser", "Microsoft Edge", "Firefox"];
-    return browserNames.some((b) => this.frontmost.appName.toLowerCase().includes(b.toLowerCase()));
+    return browserNames.some((b) => appName.toLowerCase().includes(b.toLowerCase()));
   }
 
   private async pollBrowserVisit(): Promise<void> {

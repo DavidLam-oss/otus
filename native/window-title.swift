@@ -58,23 +58,28 @@ func reply(_ obj: [String: Any]) {
 func focusedWindowTitle(pid: pid_t) -> String? {
     let appElem = AXUIElementCreateApplication(pid)
 
-    var focusedWindow: AnyObject?
-    let winResult = AXUIElementCopyAttributeValue(appElem, kAXFocusedWindowAttribute as CFString, &focusedWindow)
-    guard winResult == .success, let window = focusedWindow else {
-        // 有些 App 没有"焦点窗口"，退而求其次用主窗口
-        var mainWindow: AnyObject?
-        let mainResult = AXUIElementCopyAttributeValue(appElem, kAXMainWindowAttribute as CFString, &mainWindow)
-        guard mainResult == .success, let w = mainWindow else { return nil }
+    // 先试焦点窗口，其标题为空时再试主窗口（例如 Finder 桌面状态、某些 App 焦点窗口无标题）。
+    func title(of element: AnyObject?) -> String? {
+        guard let obj = element else { return nil }
+        let el = obj as! AXUIElement
         var titleVal: AnyObject?
-        guard AXUIElementCopyAttributeValue(w as! AXUIElement, kAXTitleAttribute as CFString, &titleVal) == .success,
+        guard AXUIElementCopyAttributeValue(el, kAXTitleAttribute as CFString, &titleVal) == .success,
               let title = titleVal as? String else { return nil }
         return title
     }
 
-    var titleVal: AnyObject?
-    guard AXUIElementCopyAttributeValue(window as! AXUIElement, kAXTitleAttribute as CFString, &titleVal) == .success,
-          let title = titleVal as? String else { return nil }
-    return title
+    var focusedWindow: AnyObject?
+    if AXUIElementCopyAttributeValue(appElem, kAXFocusedWindowAttribute as CFString, &focusedWindow) == .success {
+        if let t = title(of: focusedWindow), !t.isEmpty { return t }
+    }
+
+    // 焦点窗口不存在或其标题为空 → 退而求其次用主窗口
+    var mainWindow: AnyObject?
+    if AXUIElementCopyAttributeValue(appElem, kAXMainWindowAttribute as CFString, &mainWindow) == .success {
+        if let t = title(of: mainWindow), !t.isEmpty { return t }
+    }
+
+    return nil
 }
 
 // 主循环：每行一个请求，同步处理、同步回复。
