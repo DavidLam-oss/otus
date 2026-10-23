@@ -119,6 +119,26 @@ export class ActivitySummarizer {
   private store: ActivityStore;
   private config: OtusConfig;
 
+  /**
+   * 会话有效时长计算器。
+   *
+   * 背景：`activity_sessions.duration_ms` 只在 closeSession() 时写入，
+   * 进行中的会话该列为 NULL。若各处直接用 `durationMs || 0`，正在进行的活动
+   * 会被算成 0 分钟（报告正文「今天没有可分析的活动记录」）或 1 分钟
+   * （主题统计「_0 分钟_」），与 topApps 里的真实分钟数自相矛盾。
+   *
+   * generateDailyReport 每次运行时用当日快照重设此函数（闭包捕获同一个 nowMs，
+   * 保证一次报告内所有时长口径一致）。私有方法 drawFrame 等直接调用的场景
+   * 走默认实现兜底。
+   */
+  private effectiveSessionDurationMs: (sess: { startedAt: number; endedAt?: number | null; durationMs?: number | null }) => number =
+    (sess) => {
+      if (sess.endedAt) {
+        return sess.durationMs || Math.max(0, sess.endedAt - sess.startedAt);
+      }
+      return Math.max(0, Date.now() - sess.startedAt);
+    };
+
   constructor(store: ActivityStore, config: Partial<OtusConfig> = {}) {
     this.store = store;
     this.config = { ...defaultConfig, ...config };
@@ -206,7 +226,34 @@ export class ActivitySummarizer {
       if (title.startsWith("loginwindow") || title.startsWith("idle /") || title.includes("系统锁屏闲置")) return false;
       return true;
     });
-    const filteredSessions = allSessions.filter((s) => s.analysisStatus === "not_worth" || !analyzedSessions.includes(s));
+
+    // 进行中的会话（ended_at IS NULL）尚未经过 analyzer，analysis_status 仍为 pending。
+    // 若不纳入，用户"边干活边看报告"时正文会显示为空，与其已采集的实际活动矛盾。
+    // 这里把「已有足够采集量」的进行中会话折算成只读条目并入 analyzedSessions（不改库、不改状态）。
+    const inProgressIds = new Set(
+      allSessions
+        .filter((s) => !s.endedAt && s.analysisStatus === "pending" && (s.eventCount >= 10 || s.snapshotCount >= 5))
+        .map((s) => s.id)
+    );
+    if (inProgressIds.size > 0) {
+      for (const s of allSessions) {
+        if (!inProgressIds.has(s.id)) continue;
+        analyzedSessions.push({
+          ...s,
+          analysisStatus: "analyzed",
+          // 让下游有可读标题；真实标题在会话结束后由 analyzer 生成
+          analysisTitle: s.analysisTitle || `进行中的活动（${s.appNames.slice(0, 3).join("、") || "未知应用"}）`
+        } as any);
+      }
+      // 按开始时间重排，保持时间线顺序
+      analyzedSessions.sort((a, b) => a.startedAt - b.startedAt);
+    }
+
+    // 计数口径：在并入进行中会话之后计算，避免同一会话既算实质活动又算被过滤
+    const analyzedIdSet = new Set(analyzedSessions.map((s) => s.id));
+    const filteredSessions = allSessions.filter(
+      (s) => s.analysisStatus === "not_worth" || !analyzedIdSet.has(s.id)
+    );
 
     // 提取会话的抽稀上下文
     const enriched = analyzedSessions.map((sess) => {
@@ -237,15 +284,25 @@ export class ActivitySummarizer {
     });
 
     // 3. 统计全天活跃时长与主用应用
+    //    注意：duration_ms 只在 closeSession 时写入，进行中的会话该字段为 NULL。
+    //    若直接用 `sess.durationMs || 0`，正在进行的活动会被算成 0 分钟，
+    //    导致"边干活边看报告"时正文出现「今天没有可分析的活动记录」，与 topApps 自相矛盾。
+    //    这里对未结束会话用 (now - startedAt) 兜底。
+    const nowMs = Date.now();
+    const effectiveDurationMs = (sess: (typeof allSessions)[number]): number => {
+      if (sess.endedAt) return sess.durationMs || Math.max(0, sess.endedAt - sess.startedAt);
+      return Math.max(0, nowMs - sess.startedAt);
+    };
+    this.effectiveSessionDurationMs = effectiveDurationMs;
     let totalActiveMs = 0;
     let earliestStart = Number.POSITIVE_INFINITY;
     let latestEnd = 0;
     const appDurations = new Map<string, number>();
     for (const sess of allSessions) {
-      totalActiveMs += sess.durationMs || 0;
-      // 墙钟跨度：从最早会话开始到最晚会话结束
+      totalActiveMs += effectiveDurationMs(sess);
+      // 墙钟跨度：从最早会话开始到最晚会话结束（未结束的按当前时刻算）
       const start = sess.startedAt;
-      const end = sess.endedAt || (sess.startedAt + (sess.durationMs || 0));
+      const end = sess.endedAt || nowMs;
       if (start > 0) earliestStart = Math.min(earliestStart, start);
       if (end > 0) latestEnd = Math.max(latestEnd, end);
       const perApp = this.store.perAppDurationsForSession(sess.id);
@@ -257,8 +314,17 @@ export class ActivitySummarizer {
     // 墙钟跨度与利用率：帮助用户理解「活跃 N 分钟」是有效时长而非在职时长
     const wallClockMs =
       Number.isFinite(earliestStart) && latestEnd > earliestStart ? latestEnd - earliestStart : 0;
-    const utilizationPct = wallClockMs > 0 ? Math.round((totalActiveMs / wallClockMs) * 100) : 0;
-    const wallClockHours = Math.round((wallClockMs / 3600000) * 10) / 10;
+
+    // 边界：当天只有一个（或在进行中的）会话时，跨度必然等于该会话时长，
+    // 利用率会恒等于 100%，这种「100% 利用率」在现实中不成立，会误导用户。
+    // 因此跨度统计要求「至少 2 个不同起点、且跨度不短于时长本身」，否则不出这个指标。
+    const distinctStarts = new Set(allSessions.map((s) => s.startedAt)).size;
+    const spanMeaningful =
+      wallClockMs > 0 && distinctStarts >= 2 && wallClockMs > totalActiveMs * 1.02;
+    const utilizationPct = spanMeaningful ? Math.round((totalActiveMs / wallClockMs) * 100) : 0;
+    const wallClockHours = spanMeaningful ? Math.round((wallClockMs / 3600000) * 10) / 10 : 0;
+    // 当天是否仍有进行中的会话（报告会标注「实时」口径，避免用户误以为数据停了）
+    const hasOngoing = allSessions.some((s) => !s.endedAt);
 
     const topApps = [...appDurations.entries()]
       .sort((a, b) => b[1] - a[1])
@@ -282,7 +348,9 @@ export class ActivitySummarizer {
       wallClockHours,
       utilizationPct,
       clusterCount: clusters.length,
-      topApps
+      topApps,
+      // 当天仍有进行中的会话：报告是「截至当前时刻」的实时快照，不是收敛后的终值
+      hasOngoing
     };
 
     if (clusters.length === 0) {
@@ -478,7 +546,12 @@ export class ActivitySummarizer {
       const item: any = {
         id,
         time: hhmm,
-        minutes: Math.max(1, Math.round((s.row.durationMs || 0) / 60000)),
+        // durationMs 仅在会话闭合时写入，进行中的会话为 NULL。
+        // 若不兜底，LLM 看到的时长会是 1 分钟，导致主题统计出现「_0 分钟_」这类荒谬结论。
+        minutes: Math.max(
+          1,
+          Math.round(this.effectiveSessionDurationMs(s.row) / 60000)
+        ),
         apps: s.row.appNames,
         title: s.row.analysisTitle || "(无标题)"
       };
@@ -628,7 +701,7 @@ ${JSON.stringify(chunk, null, 2)}`;
       const topics: string[] = [];
       for (const m of members) {
         this.mergeEntities(entities, m.row.entities);
-        totalMs += m.row.durationMs || 0;
+        totalMs += this.effectiveSessionDurationMs(m.row);
         for (const t of m.row.topics || []) if (!topics.includes(t)) topics.push(t);
       }
       clusters.push({
@@ -651,7 +724,7 @@ ${JSON.stringify(chunk, null, 2)}`;
       const topics: string[] = [];
       for (const m of leftovers) {
         this.mergeEntities(entities, m.row.entities);
-        totalMs += m.row.durationMs || 0;
+        totalMs += this.effectiveSessionDurationMs(m.row);
         for (const t of m.row.topics || []) if (!topics.includes(t)) topics.push(t);
       }
       clusters.push({
@@ -713,7 +786,7 @@ ${JSON.stringify(chunk, null, 2)}`;
             merged.sessions.push(gi);
             this.mergeEntities(merged.entities, gi.row.entities);
             for (const t of gi.row.topics || []) if (!merged.topics.includes(t)) merged.topics.push(t);
-            merged.totalMs += gi.row.durationMs || 0;
+            merged.totalMs += this.effectiveSessionDurationMs(gi.row);
           }
           if (this.isCompatibleWithCluster(merged, item)) { g.push(item); placed = true; break; }
         }
@@ -725,7 +798,7 @@ ${JSON.stringify(chunk, null, 2)}`;
           cl.sessions.push(extra);
           this.mergeEntities(cl.entities, extra.row.entities);
           for (const t of extra.row.topics || []) if (!cl.topics.includes(t)) cl.topics.push(t);
-          cl.totalMs += extra.row.durationMs || 0;
+          cl.totalMs += this.effectiveSessionDurationMs(extra.row);
         }
         clusters.push(cl);
       }
@@ -779,7 +852,7 @@ ${JSON.stringify(chunk, null, 2)}`;
       sessions: [item],
       entities,
       topics: [...(item.row.topics || [])],
-      totalMs: item.row.durationMs || 0
+      totalMs: this.effectiveSessionDurationMs(item.row)
     };
   }
 
@@ -886,8 +959,10 @@ ${JSON.stringify(chunk, null, 2)}`;
       stats.wallClockHours > 0
         ? `跨度为 ${stats.wallClockHours} 小时，有效利用率 ${stats.utilizationPct}%`
         : "";
+    // 仍有进行中的活动时，明确标注这是实时口径，避免用户以为「数据就这些了」
+    const ongoingStr = stats.hasOngoing ? "（含进行中的活动，统计截至当前时刻）" : "";
     lines.push(
-      `有效活跃 ${stats.totalActiveMinutes} 分钟${spanStr ? `（${spanStr}）` : ""}，共 ${stats.sessionCount} 个 session（${stats.analyzedCount} 个实质折腾${filteredStr}），归类为 ${stats.clusterCount} 个核心主题。${topAppsStr}`
+      `有效活跃 ${stats.totalActiveMinutes} 分钟${ongoingStr}${spanStr ? `（${spanStr}）` : ""}，共 ${stats.sessionCount} 个 session（${stats.analyzedCount} 个实质折腾${filteredStr}），归类为 ${stats.clusterCount} 个核心主题。${topAppsStr}`
     );
     lines.push("");
 
