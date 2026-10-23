@@ -52,6 +52,9 @@ export class ActivityRecorderService {
   // 闲置降频：连续跳过的次数
   private visualIdleTicks: number = 0;
 
+  // 方案 B：最后一次检测到「画面实质变化」的时间戳（用于长任务活跃判定）
+  private lastVisualActivityAt: number = 0;
+
   // 截屏失败退避：连续失败时指数延长重试间隔，避免 screencapture 报错刷屏
   private captureFailures: number = 0;
   private captureNextAllowedAt: number = 0;
@@ -207,8 +210,47 @@ export class ActivityRecorderService {
   private resetIdleTimer(): void {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => {
+      // 长任务活跃判定：即便无输入（人不操作），只要"任务在跑"——近期画面有实质变化，
+      // 或前台是任务型 App——就不关闭会话，顺延一个 idle 周期继续累积。
+      if (this.isEffectivelyActive()) {
+        this.resetIdleTimer();
+        return;
+      }
       this.closeCurrentSession("idle");
     }, this.config.idleThresholdMs);
+  }
+
+  /**
+   * 是否处于"有效活跃"状态（长任务 = 活跃）。
+   * 三源任一成立即活跃：
+   *   C. 真实输入：距上次输入 < idleThresholdMs
+   *   B. 画面实质变化：距上次变化 < visualActivityWindowMs
+   *   A. 前台任务型 App：当前前台命中白名单
+   * 锁屏/合盖一律不算（由调用方保证 screenLocked 已拦截）。
+   */
+  private isEffectivelyActive(): boolean {
+    if (this.screenLocked) return false;
+    const now = Date.now();
+    // C. 真实输入
+    if (now - this.lastInputAt < this.config.idleThresholdMs) return true;
+    // B. 画面实质变化
+    if (this.lastVisualActivityAt > 0 && now - this.lastVisualActivityAt < this.config.visualActivityWindowMs) {
+      return true;
+    }
+    // A. 前台任务型 App（持续存在即算，覆盖"AI 输出文字但不操作"场景）
+    if (this.isTaskApp(this.frontmost.appName)) return true;
+    return false;
+  }
+
+  /** 前台 App 是否属于任务型白名单（大小写不敏感的子串匹配，同时看 appName 与 bundleId） */
+  private isTaskApp(appName: string, bundleId?: string): boolean {
+    if (!this.config.taskAppWhitelist || this.config.taskAppWhitelist.length === 0) return false;
+    const name = (appName || "").toLowerCase();
+    const bid = (bundleId || this.frontmost.bundleId || "").toLowerCase();
+    return this.config.taskAppWhitelist.some((token) => {
+      const t = token.toLowerCase();
+      return (name && name.includes(t)) || (bid && bid.includes(t));
+    });
   }
 
   public closeCurrentSession(reason: string): void {
@@ -521,7 +563,7 @@ export class ActivityRecorderService {
     if (!fs.existsSync(this.inputMonitorBinPath)) return;
     console.log("[ActivityRecorder] Spawning input monitor process...");
 
-    const proc = spawn(this.inputMonitorBinPath, [], { stdio: ["ignore", "pipe", "pipe"] });
+    const proc = spawn(this.inputMonitorBinPath, [String(this.config.focusPollIntervalMs)], { stdio: ["ignore", "pipe", "pipe"] });
     this.inputMonitorProc = proc;
 
     proc.stdout?.on("data", (chunk: Buffer) => {
@@ -607,7 +649,13 @@ export class ActivityRecorderService {
 
     const session = this.ensureSession();
     this.resetIdleTimer();
-    this.lastInputAt = ts;
+
+    // 方案 A：轮询来的 app_focus 只补归属，不刷新"输入活跃"时间戳。
+    // 真实用户焦点切换（无 via 或 via!=="poll"）才算输入活跃。
+    const isPollFocus = type === "app_focus" && ev.via === "poll";
+    if (!isPollFocus) {
+      this.lastInputAt = ts;
+    }
 
     if (type === "click") {
       this.store.insertEvent(session.id, {
@@ -625,9 +673,10 @@ export class ActivityRecorderService {
         timestamp: ts,
         kind: "app_focus",
         appName: this.frontmost.appName,
-        data: { bundleId: this.frontmost.bundleId }
+        data: { bundleId: this.frontmost.bundleId, via: isPollFocus ? "poll" : "event" }
       });
-      this.scheduleCapture("app_focus");
+      // 轮询焦点不是真实输入，不触发抓拍；真实切换才抓拍
+      if (!isPollFocus) this.scheduleCapture("app_focus");
     }
   }
 
@@ -738,6 +787,8 @@ export class ActivityRecorderService {
           return;
         } catch {
           // 退出码非 0 说明检测到实质画面变动，正常进入后续持久化与识别流程
+          // 方案 B：记录"画面实质变化"时间，供长任务活跃判定使用
+          this.lastVisualActivityAt = Date.now();
         }
       }
 

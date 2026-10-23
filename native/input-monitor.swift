@@ -84,4 +84,43 @@ nc.addObserver(forName: NSWorkspace.screensDidWakeNotification, object: nil, que
     emit("{\"type\":\"screens_wake\",\"timestamp\":\(ts)}")
 }
 
+// ===== 前台 App 定期采样（方案 A：长任务期间保持 App 归属）=====
+// 动机：人不操作时不会有 app_focus 事件，frontmost 会滞留旧值/空值，
+// 导致新建 session 的 app_names 为空。这里定时采样 NSWorkspace.frontmostApplication，
+// 仅当与上次采样值不同时才 emit 一条 via:"poll" 的 app_focus，避免无谓刷事件。
+// 间隔由 Node 侧通过第一个命令行参数传入（毫秒），缺省 30000。
+var lastPolledBundleId: String = ""
+var lastPolledAppName: String = ""
+let pollIntervalMs: Int = {
+    if CommandLine.arguments.count >= 2, let v = Int(CommandLine.arguments[1]), v >= 1000 {
+        return v
+    }
+    return 30000
+}()
+
+func pollFrontmostOnce() {
+    let bundle = frontmostBundleId()
+    let appName = frontmostName()
+    if bundle != lastPolledBundleId || appName != lastPolledAppName {
+        if !appName.isEmpty && appName != "otus-input-monitor" {
+            let ts = Int(Date().timeIntervalSince1970 * 1000)
+            let b = jsonEscape(bundle)
+            let a = jsonEscape(appName)
+            emit("{\"type\":\"app_focus\",\"timestamp\":\(ts),\"bundleId\":\"\(b)\",\"appName\":\"\(a)\",\"via\":\"poll\"}")
+        }
+        lastPolledBundleId = bundle
+        lastPolledAppName = appName
+    }
+}
+
+let pollTimer = Timer.scheduledTimer(withTimeInterval: Double(pollIntervalMs) / 1000.0, repeats: true) { _ in
+    pollFrontmostOnce()
+}
+RunLoop.main.add(pollTimer, forMode: .common)
+
+// 启动后 500ms 立即采样一次，避免 daemon 刚起来时 frontmost 为空导致首批会话丢归属
+DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+    pollFrontmostOnce()
+}
+
 app.run()

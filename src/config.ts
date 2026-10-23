@@ -33,6 +33,11 @@ export interface OtusConfig {
   visualCheckIntervalMs: number;
   browserPollIntervalMs: number;
 
+  // 长任务活动判定（"任务在跑 = 活跃"）
+  focusPollIntervalMs: number;        // 前台 App 定期采样间隔（方案 A）
+  visualActivityWindowMs: number;     // 画面实质变化后，多久内仍算活跃（方案 B）
+  taskAppWhitelist: string[];         // 任务型 App 白名单（前台为此类且持续存在即算活跃）
+
   // 窗口标题（AXTitle）辅助进程参数
   windowTitleTimeoutMs: number;      // 单次 AX 请求超时（AX 跨进程正常 <10ms，超时说明目标 App 卡死）
   windowTitleBackoffBaseMs: number;  // 按 App 分桶退避的起始间隔
@@ -102,6 +107,21 @@ export const baseConfig: OtusConfig = {
   heartbeatIntervalMs: 120000,    // 2min 心跳抓拍（对齐 Alma，原 30s 过密）
   visualCheckIntervalMs: 12000,   // 12s 画面差分检测（对齐 Alma）
   browserPollIntervalMs: 12000,   // 12s 浏览器穿透检测（对齐 Alma，原 5s 过密）
+
+  focusPollIntervalMs: 30000,     // 30s 前台 App 采样（方案 A：长任务期间保持 App 归属）
+  visualActivityWindowMs: 120000, // 画面实质变化后 2 分钟内仍算活跃（方案 B）
+  taskAppWhitelist: [
+    // AI / Agent 类
+    "DeepSeek Harness", "Claude", "ChatGPT", "Cursor",
+    "codex", "Antigravity", "WorkBuddy", "豆包工作",
+    // 终端类
+    "Terminal", "iTerm2", "Warp", "Ghostty", "Alacritty",
+    // IDE / 编辑器
+    "Visual Studio Code", "Xcode", "IntelliJ IDEA", "WebStorm",
+    "Sublime Text", "Zed", "Obsidian",
+    // 构建 / 系统工具
+    "Docker", "Activity Monitor",
+  ],
 
   windowTitleTimeoutMs: 800,        // 单次 AX 请求超时（正常 <10ms，超时说明目标 App 卡死）
   windowTitleBackoffBaseMs: 2000,   // 按 App 分桶退避起始
@@ -196,6 +216,9 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     idleThresholdMs: atLeast(cfg.idleThresholdMs, 15000),
     visualCheckIntervalMs: atLeast(cfg.visualCheckIntervalMs, 10000),
     browserPollIntervalMs: atLeast(cfg.browserPollIntervalMs, 10000),
+    focusPollIntervalMs: atLeast(cfg.focusPollIntervalMs, 5000),
+    visualActivityWindowMs: atLeast(cfg.visualActivityWindowMs, 30000),
+    taskAppWhitelist: Array.isArray(cfg.taskAppWhitelist) ? cfg.taskAppWhitelist : [],
     windowTitleTimeoutMs: roundTo(cfg.windowTitleTimeoutMs, 800, 200, 5000),
     windowTitleBackoffBaseMs: atLeast(cfg.windowTitleBackoffBaseMs, 500),
     windowTitleBackoffMaxMs: atLeast(cfg.windowTitleBackoffMaxMs, 5000),
