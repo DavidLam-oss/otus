@@ -33,6 +33,12 @@ export interface OtusConfig {
   visualCheckIntervalMs: number;
   browserPollIntervalMs: number;
 
+  // 窗口标题（AXTitle）辅助进程参数
+  windowTitleTimeoutMs: number;      // 单次 AX 请求超时（AX 跨进程正常 <10ms，超时说明目标 App 卡死）
+  windowTitleBackoffBaseMs: number;  // 按 App 分桶退避的起始间隔
+  windowTitleBackoffMaxMs: number;   // 退避上限
+  windowTitleMaxFailures: number;    // 连续失败计数上限（指数退避的幂次封顶）
+
   sensitiveApps: string[];
   ocrLanguages: string[];
   ocrEveryN: number;
@@ -96,6 +102,11 @@ export const baseConfig: OtusConfig = {
   heartbeatIntervalMs: 120000,    // 2min 心跳抓拍（对齐 Alma，原 30s 过密）
   visualCheckIntervalMs: 12000,   // 12s 画面差分检测（对齐 Alma）
   browserPollIntervalMs: 12000,   // 12s 浏览器穿透检测（对齐 Alma，原 5s 过密）
+
+  windowTitleTimeoutMs: 800,        // 单次 AX 请求超时（正常 <10ms，超时说明目标 App 卡死）
+  windowTitleBackoffBaseMs: 2000,   // 按 App 分桶退避起始
+  windowTitleBackoffMaxMs: 60000,   // 退避上限
+  windowTitleMaxFailures: 16,       // 指数退避幂次封顶
 
   sensitiveApps: [
     "com.agilebits.onepassword",
@@ -185,6 +196,10 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     idleThresholdMs: atLeast(cfg.idleThresholdMs, 15000),
     visualCheckIntervalMs: atLeast(cfg.visualCheckIntervalMs, 10000),
     browserPollIntervalMs: atLeast(cfg.browserPollIntervalMs, 10000),
+    windowTitleTimeoutMs: roundTo(cfg.windowTitleTimeoutMs, 800, 200, 5000),
+    windowTitleBackoffBaseMs: atLeast(cfg.windowTitleBackoffBaseMs, 500),
+    windowTitleBackoffMaxMs: atLeast(cfg.windowTitleBackoffMaxMs, 5000),
+    windowTitleMaxFailures: roundTo(cfg.windowTitleMaxFailures, 16, 1, 20),
     ocrEveryN: roundTo(cfg.ocrEveryN, 1, 1, 10),
     snapshotQuality: roundTo(cfg.snapshotQuality, 40, 30, 95),
     snapshotMaxWidth: roundTo(cfg.snapshotMaxWidth, 1280, 320, 3840),

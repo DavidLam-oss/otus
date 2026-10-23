@@ -279,16 +279,28 @@ export class ActivityRecorderService {
 
     // 构建 window-title 的 .app bundle：先 compile 到 app 内 MacOS 路径，再补 Info.plist 并签名整个 bundle。
     const wtSrc = path.join(nativeDir, "window-title.swift");
-    const wtNeedsBuild =
+    const wtPlistPath = path.join(windowTitleApp, "Contents", "Info.plist");
+    const wtBaseNeedsBuild =
       !fs.existsSync(this.windowTitleBinPath) ||
-      !fs.existsSync(path.join(windowTitleApp, "Contents", "Info.plist")) ||
+      !fs.existsSync(wtPlistPath) ||
       fs.statSync(wtSrc).mtimeMs > fs.statSync(this.windowTitleBinPath).mtimeMs;
+    // 源码未变但 bundle 签名被外部破坏 / xattr 丢失 / 二进制被替换时，
+    // 上面三项都察觉不到——用 codesign --verify 补一次完整性校验，失败则强制重建重签。
+    let wtNeedsBuild = wtBaseNeedsBuild;
+    if (!wtNeedsBuild) {
+      try {
+        execSync(`codesign --verify "${windowTitleApp}"`, { stdio: "ignore" });
+      } catch {
+        console.warn("[ActivityRecorder] window-title.app 签名校验未通过，将重建并重签...");
+        wtNeedsBuild = true;
+      }
+    }
     if (wtNeedsBuild) {
       console.log(`[ActivityRecorder] Building window-title.app -> ${windowTitleApp}...`);
       fs.mkdirSync(path.join(windowTitleApp, "Contents", "MacOS"), { recursive: true });
       execSync(`swiftc -O "${wtSrc}" -o "${this.windowTitleBinPath}"`, { stdio: "inherit" });
       fs.writeFileSync(
-        path.join(windowTitleApp, "Contents", "Info.plist"),
+        wtPlistPath,
         `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -396,7 +408,7 @@ export class ActivityRecorderService {
   }
 
   // helper 崩溃后被 kill -9 也会走 exit(code=null)，用 isRunning 区分正常 stop。
-  // 指数退避 500ms → 30s 封顶，连续崩溃不超过该间隔重拉。
+  // 指数退避封顶 30s，连续崩溃不会无限拉长。
   private scheduleWindowTitleRestart(): void {
     if (this.windowTitleRestartTimer) return; // 已有待执行的重启
     this.windowTitleRestartFailures = Math.min(this.windowTitleRestartFailures + 1, 16);
@@ -433,7 +445,7 @@ export class ActivityRecorderService {
         // 超时：认为该 App 的 AX 响应异常，累计该 App 失败并退避
         this.onWindowTitleFailure(bundleId, "timeout");
         done(null);
-      }, 800);
+      }, this.config.windowTitleTimeoutMs);
 
       this.windowTitleResolvers.push((resp) => {
         clearTimeout(timer);
@@ -481,20 +493,23 @@ export class ActivityRecorderService {
   }
 
   private onWindowTitleFailure(bundleId: string, reason: string): void {
+    const maxFailures = this.config.windowTitleMaxFailures;
+    const backoffBase = this.config.windowTitleBackoffBaseMs;
+    const backoffMax = this.config.windowTitleBackoffMaxMs;
     // write_failed 属进程级故障：走全局退避
     if (reason === "write_failed") {
-      this.windowTitleFailures = Math.min(this.windowTitleFailures + 1, 16);
-      const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, this.windowTitleFailures - 1)));
+      this.windowTitleFailures = Math.min(this.windowTitleFailures + 1, maxFailures);
+      const backoff = Math.min(backoffMax, backoffBase * Math.pow(2, Math.max(0, this.windowTitleFailures - 1)));
       this.windowTitleNextAllowedAt = Date.now() + backoff;
       if (this.windowTitleFailures <= 3) {
-        console.warn(`[ActivityRecorder] 取窗口标题失败(${this.windowTitleFailures}/16, ${reason})，${backoff}ms 后重试`);
+        console.warn(`[ActivityRecorder] 取窗口标题失败(${this.windowTitleFailures}/${maxFailures}, ${reason})，${backoff}ms 后重试`);
       }
       return;
     }
-    // 按 App 分桶退避：2s * 2^(n-1)，封顶 60s
-    const n = Math.min((this.windowTitleFailuresByApp.get(bundleId) ?? 0) + 1, 16);
+    // 按 App 分桶退避：base * 2^(n-1)，封顶 max
+    const n = Math.min((this.windowTitleFailuresByApp.get(bundleId) ?? 0) + 1, maxFailures);
     this.windowTitleFailuresByApp.set(bundleId, n);
-    const backoff = Math.min(60000, 2000 * Math.pow(2, Math.max(0, n - 1)));
+    const backoff = Math.min(backoffMax, backoffBase * Math.pow(2, Math.max(0, n - 1)));
     this.windowTitleNextAllowedByApp.set(bundleId, Date.now() + backoff);
     if (n <= 3) {
       console.warn(`[ActivityRecorder] 取窗口标题失败(${bundleId} ${n}/16, ${reason})，${backoff}ms 后重试`);
