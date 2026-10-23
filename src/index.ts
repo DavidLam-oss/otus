@@ -506,6 +506,9 @@ Commands:
   config              View or set LLM gateway, API keys, and models
   report [dateKey]    Print daily tinkering journal markdown (e.g. 2026-10-17)
   export [dateKey]    Generate & open HTML daily flow report in browser
+  analyze [dateKey]   Force re-analysis of all sessions in one day
+  recompute-signals [days]
+                      Backfill session signals (default: last 7 days)
   test-capture        Take an immediate snapshot & test native Vision OCR
       `);
       break;

@@ -74,9 +74,15 @@ App 名字、侧边栏里的项目名、历史任务标题都只是环境背景�
 - 每个编号必须且只能出现在一个主题里，不得遗漏、不得重复，只能用输入中出现过的编号。
 - titles 为每一条会话都给出标题；原标题已准确则原样返回。`;
 
-const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与效能分析专家。根据用户全天的活动骨架与统计数据，以犀利、具体、直击要害的口吻生成 4-6 条高质量的「工作流深度复盘与洞察」卡片。
+const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是个人折腾日记的观察者。根据用户全天的活动骨架与统计，生成 4-6 张「今天怎么用工具」的观察卡片。
 
-请输出一个合法的 JSON 数组，每个卡片结构如下：
+## 唯一判据：用户今天实际是怎么用工具的
+
+只描述可观察到的工作方式与产出，不评价效率高低、精力好坏、专注力强不强。
+看到"活跃 12 小时"就说"活跃 12 小时"，不要衍生"需要强制休息"。
+
+## 输出格式（严格 JSON 数组）
+
 [
   {
     "type": "good" | "warn" | "ai",
@@ -86,11 +92,10 @@ const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与�
   }
 ]
 
-说明：
-- type: "good" (高光闭环、显著产出), "warn" (精力预警、过度调试、该改的), "ai" (多Agent编排、提示词优化、工程护栏沉淀)
-- tag: 2-6字简短标签（如："高光闭环"、"精力预警"、"调试策略"、"AI工具习惯"、"工程护栏"、"产品化思维"）
-- title: 简明有力（<= 25 字）
-- content: 2-3 句具体剖析（<= 160 字），可使用 **粗体** 或 \`代码\` 标记关键点
+- type: "good" 完成度高的推进, "warn" 曾卡住但有结论的尝试, "ai" 工具/提示词/自动化用法
+- tag: 2-6 字（如"高光闭环"、"调试策略"、"AI工具习惯"、"工程护栏"）
+- title: <= 25 字
+- content: 2-3 句（<= 160 字），可用 **粗体** 或 \`代码\`
 `;
 
 export interface ThemeCluster {
@@ -122,6 +127,8 @@ export class ActivitySummarizer {
    * 保证一次报告内所有时长口径一致）。私有方法 drawFrame 等直接调用的场景
    * 走默认实现兜底。
    */
+  // 参数用最小结构类型（结构化子类型），这样既能接 ActivitySession，
+  // 也能接只带这三个字段的轻量对象（如测试与中间聚合）。
   private effectiveSessionDurationMs: (sess: { startedAt: number; endedAt?: number | null; durationMs?: number | null }) => number =
     (sess) => {
       if (sess.endedAt) {
@@ -280,7 +287,10 @@ export class ActivitySummarizer {
     //    导致"边干活边看报告"时正文出现「今天没有可分析的活动记录」，与 topApps 自相矛盾。
     //    这里对未结束会话用 (now - startedAt) 兜底。
     const nowMs = Date.now();
-    const effectiveDurationMs = (sess: (typeof allSessions)[number]): number => {
+    // 注意：参数必须用最小结构类型，不能写成 (typeof allSessions)[number]。
+    // 后者要求 ActivitySession 全部 24 个字段，赋值给
+    // effectiveSessionDurationMs 的窄签名会因逆变检查报 TS2322。
+    const effectiveDurationMs = (sess: { startedAt: number; endedAt?: number | null; durationMs?: number | null }): number => {
       if (sess.endedAt) return sess.durationMs || Math.max(0, sess.endedAt - sess.startedAt);
       return Math.max(0, nowMs - sess.startedAt);
     };
@@ -1023,6 +1033,16 @@ ${JSON.stringify(chunk, null, 2)}`;
         const vers = c.entities.versions.map((v: any) => v.label).filter(Boolean);
         if (vers.length) outcomes.push(`涉及版本 ${vers.join("、")}`);
       }
+      // commits 原先只入库、无消费方，等于白付 token，这里接进「成果」行。
+      // 注意 people 不要接：OCR 里出现的任何名字（群成员、昵称、文件名片段）
+      // 都会被 LLM 当成人名抓出来，接进报告就是噪音。实测一轮就冒出
+      // Jay / 林大友 / m00806 / davidlin 四个假协作者，故明确不做。
+      const commitLabels = new Set<string>();
+      for (const cm of c.entities.commits || []) {
+        const label = String(cm?.ref || cm?.label || "").trim();
+        if (label) commitLabels.add(label.slice(0, 20));
+      }
+      if (commitLabels.size) outcomes.push(`${commitLabels.size} 次提交`);
       if (outcomes.length) {
         lines.push("");
         lines.push(`_成果：${outcomes.join(" · ")}_`);
@@ -1317,24 +1337,24 @@ ${body}`
     if (stats.totalActiveMinutes >= 480) {
       fallback.push({
         type: "warn",
-        tag: "精力预警",
-        title: `连轴运转超 ${Math.round(stats.totalActiveMinutes / 60)} 小时`,
-        content: `全天累计活跃专注时长达 **${stats.totalActiveMinutes} 分钟**，持续高强度注意力容易导致晚间认知负荷过载，建议设定强制屏幕休息窗口。`
+        tag: "时长提醒",
+        title: `全天活跃 ${Math.round(stats.totalActiveMinutes / 60)} 小时`,
+        content: `累计活跃专注时长达 **${stats.totalActiveMinutes} 分钟**。`
       });
     } else {
       fallback.push({
         type: "good",
-        tag: "心流节奏",
-        title: "专注节奏紧凑高效",
-        content: `有效折腾会话 ${stats.analyzedCount} 个，系统已自动剔除 ${stats.filteredCount || 0} 个无操作闲置切片，折腾信噪比保持高位。`
+        tag: "信噪比",
+        title: "闲置切片已过滤",
+        content: `有效折腾会话 ${stats.analyzedCount} 个，剔除 ${stats.filteredCount || 0} 个无操作闲置切片。`
       });
     }
 
     fallback.push({
       type: "ai",
       tag: "工程护栏",
-      title: "踩坑即固化，打造自动化护栏",
-      content: `在开发与调试流程中，保持将高频试错与边界条件固化为脚本、类型规范与规则文档，这是复利最高的技术资产。`
+      title: "试错固化为脚本与规则",
+      content: `将高频试错与边界条件沉淀为脚本、类型规范或规则文档。`
     });
 
     return fallback;

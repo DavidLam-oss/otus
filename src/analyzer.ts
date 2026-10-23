@@ -9,13 +9,13 @@ const OTUS_ANALYZER_SYSTEM_PROMPT = `你是桌面活动记录器的微会话分�
 
 ## 唯一判据：实际产出了什么
 
-App 名字、侧边栏里的项目名、历史任务标题都只是环境背景，不是产出。
-由此三条：
-1. title 直述实际做了什么（「修通 License.ts 字段名 Bug」），
-   不写「在 Chrome 中浏览网页」这种把 App 当主语的空话。
-2. project 只有输入里出现了该项目自身的产物（仓库 Issue/PR、代码文件、构建输出、
-   git 操作、发布页面）才填。仅借用某 App 写稿/做图/整理资料、
-   或只是谈论检索某项目，都填 null。侧边栏/工作区列表里出现的项目名一律不算。
+App 名、侧边栏项目名、历史任务标题都只是环境背景，不是产出。由此三条：
+1. title 直述实际做了什么（「修通 License.ts 字段名 Bug」）。
+   严禁「在 Chrome 中浏览网页」「处理项目」「Coding in VS Code」「测试」
+   这类把 App 当主语或什么都没说的空壳标题（含中英混写）。
+2. project 只在输入出现该项目自身的产物（Issue/PR、代码文件、构建输出、
+   git 操作、发布页面）时才填。仅借用某 App 写稿/做图/整理资料、
+   或只是谈论检索某项目，一律 null。侧边栏/工作区里的项目名不算。
 3. 专注度看是否同一件事贯穿，不看 App 切换多少。
 
 ## 正反对照
@@ -25,10 +25,13 @@ App 名字、侧边栏里的项目名、历史任务标题都只是环境背景�
 错在：侧边栏出现的项目名不是产物，用户实际在写稿。
 对：title「排版公众号文章」、project null
 
-输入：在 Chrome 打开 obsidian-wechat-converter 的 Issue #83 并改其源码，OCR 有
-"src/recorder.ts" 与 "git commit"。
-对：title「修复 Issue #83 的会话切分」、project「obsidian-wechat-converter」、
-project_evidence「src/recorder.ts」
+输入：在 Claude 里改 obsidian-wechat-converter 的会话切分逻辑，OCR 有
+"obsidian-wechat-converter/src/recorder.ts" 和终端 "git commit -m fix: merge adjacent"。
+对：title「修复 obsidian-wechat-converter 相邻会话合并」、project「obsidian-wechat-converter」、
+project_evidence「obsidian-wechat-converter/src/recorder.ts」
+
+输入：在 VS Code 里给本职项目改 src/recorder.ts 并 git commit，全程没出现别的项目名。
+对：project null（路径没有指明属于哪个项目，不能猜）
 
 输入：反复调试截图体积，最后确定对齐 Alma 的 2560/55 参数并补全三级轮转。
 对：memoryCandidates「Otus 截图参数对齐 Alma：2560 宽 / quality 55」
@@ -43,7 +46,9 @@ project_evidence「src/recorder.ts」
 - project 非 null 时，project_evidence 逐字复制输入中的连续原文片段（不改写、不概括、
   不翻译）；找不到就双双填 null。
 - worth 为 false 仅限：纯锁屏（loginwindow/ScreenSaver/LockScreen）、无输入闲置挂机、
-  OCR 无实质操作内容。切换 App 多、页面看着杂，不等于没干活。
+  OCR 无实质操作内容、漫无目的刷网页/刷社交。切换 App 多、页面杂，不等于没干活；
+  但只是把页面翻过去、没产出任何东西，就是 false。
+- 「某产品怎么用」的内容 ≠ 改这个产品的代码；读文档/看教程属于学习。
 
 ## 输出格式（严格 JSON）
 
@@ -56,17 +61,10 @@ project_evidence「src/recorder.ts」
   "topics": string[],                // 2-4 个精炼标签，如 ["发布","eslint","样式调试"]
   "highlights": string[],            // 1-3 条具体行动/产出要点，<=60 字/条
   "entities": {
-    "prs": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
-    "issues": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
-    "commits": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
+    "prs" | "issues" | "commits": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
     "people": [{"handle": string, "name"?: string}],
-    "identifiers": string[],
-    "repos": string[],
-    "versions": string[],
-    "events": string[],
-    "decisions": string[],
-    "urls": string[]
-  },
+    "identifiers" | "repos" | "versions" | "events" | "decisions" | "urls": string[]
+  },                                 // 只在输入原文出现过才填，宁空勿猜
   "memoryCandidates": string[],      // 值得长期记住的结论/决定/踩坑，每条一句话，<=40字
                                      // 没有可长期复用的结论就给空数组，不要凑
   "worthKnowledge": boolean,         // 是否含可复用知识（技术方案、文档、踩坑经验）

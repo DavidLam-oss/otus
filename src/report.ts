@@ -217,7 +217,7 @@ export class ReportRenderer {
         <div class="stat">
           <div class="top-row"><span class="n purple">${finalThemesMap.size || stats.clusterCount || 0}</span><span class="badge">THEMES</span></div>
           <div class="l">核心聚类主题</div>
-          <div class="sub-l">Jaccard ≥ 0.18</div>
+          <div class="sub-l">HAC + TF-IDF</div>
         </div>
         <div class="stat">
           <div class="top-row"><span class="n warn">${liveTopAppName}</span><span class="badge">TOP APP</span></div>

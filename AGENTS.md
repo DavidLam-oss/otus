@@ -37,10 +37,16 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
    - **依赖原则**：**0 外部 NPM 依赖**（`package.json` 中无 `dependencies`）；
    - **macOS 底层交互**：采用独立 Swift 脚本（`native/*.swift`），由构建脚本编译为独立二进制执行。
 3. **高保真记录与总结机制**：
-   - **会话切分与总结**：采用 Jaccard 相似度 $\ge 0.18$ 聚类，严格遵循防幻觉 Hard Rules 约束体系；
+   - **会话切分与总结**：主路径为 **HAC 凝聚层次聚类 + TF-IDF 向量**（`clusterCutDistance` 0.62，
+     相似度 ≈0.38 以上倾向同簇），主题内要点用 **MMR 边际相关性**去重；
+     LLM 不可用时回退到字符 bigram Jaccard。全程严格遵循防幻觉 Hard Rules 约束体系；
    - **隐私保护**：入库与调用 LLM 前必须经过 `src/redactor.ts`（脱敏 API Key、私钥、Token）；
-   - **图像判重**：截图经 `sips` 压缩至 2560px + 质量 55（对齐 Alma，约 385KB/张），并通过 `native/img-diff.swift`（32-bin 归一化灰度直方图 + 巴氏距离）过滤 $<5\%$ 的微变静止帧；判重用独立的 160×90 内存缩略图，与落盘分辨率无关；
-   - **三级存储轮转**（对齐 Alma）：hot 1 天保留原图 → warm 7 天后重压至 1280×720@40 → cold 30 天后重压至 640×360@30 → 超期删文件保留 OCR 文本；容量超 10GB 时按时间从旧到新清理至 8GB 水位；
+   - **图像判重**：截图经 `sips` 压缩至 2560px + 质量 55（对齐 Alma，实测均值约 250KB/张，
+     随画面复杂度在 48KB–643KB 间波动），并通过 `native/img-diff.swift`（32-bin 归一化灰度直方图
+     + 巴氏距离）过滤 $<5\%$ 的微变静止帧；判重用独立的 160×90 内存缩略图，与落盘分辨率无关；
+   - **三级存储轮转**（对齐 Alma）：hot 1 天保留原图 → warm 7 天后重压至 1280×720@40 →
+     cold 30 天后重压至 640×360@30 → 超期删文件保留 OCR 文本；
+     容量超 10GiB 时按时间从旧到新清理至 7.5GiB 水位（8053063680 字节，与 Alma 一致）；
    - **系统休眠**：监听 `willSleep` / `didWake` 广播，合盖自动闭合会话，唤醒干净重置。
 4. **macOS 合规打包**：
    - 应用托管在 `/Applications/Otus.app`；
@@ -62,12 +68,16 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
 
 Otus 里已有的判据：
 
-| 提示词 | 唯一判据 |
-| :--- | :--- |
-| `OTUS_ANALYZER_SYSTEM_PROMPT` | 用户**实际产出了什么** |
-| `OTUS_THEME_SYSTEM_PROMPT` | 用户**实际产出了什么** |
-| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 忠实叙述事实，不加工 |
-| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 只基于给定事实做推断 |
+| 提示词 | 唯一判据 | 状态 |
+| :--- | :--- | :--- |
+| `OTUS_ANALYZER_SYSTEM_PROMPT` | 用户**实际产出了什么** | ✅ 已写入提示词 |
+| `OTUS_THEME_SYSTEM_PROMPT` | 用户**实际产出了什么** | ✅ 已写入提示词 |
+| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 忠实叙述事实，不加工 | ✅ 已写入（措辞为「严格的事实边界」） |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 只基于给定事实做推断 | ⚠️ 未写入，待补 |
+
+`OTUS_INSIGHTS_SYSTEM_PROMPT` 目前的口吻要求（「犀利、直击要害」）与 3.5 第 3 条
+「不做人格或效率评判」**存在冲突**，尚未解决。补判据时要一并处理：
+判据应是「用户今天实际怎么用工具的」，而不是「用户今天效率如何」。
 
 ### 3.2 用示例替代规则堆叠
 
@@ -85,7 +95,10 @@ Otus 里已有的判据：
 
 ### 3.4 规模上限与体检
 
-- 单条 system prompt **不超过 2500 字符**（JSON schema 输出格式部分不计入）；
+- 单条 system prompt **不超过 2500 字符**；
+- 「字符数」的统计口径：从 `const XXX_PROMPT = \`` 到闭合反引号之间的全部内容
+  （含 JSON 输出格式段）。**不设 schema 豁免** —— schema 也是 token 成本，
+  且模型同样要理解它，把它排除在预算外等于自欺欺人；
 - 超过时优先做**压缩重写**，不是拆分；
 - 每次修改提示词后，用下方命令体检，并把字符数变化写进 commit message：
 
@@ -94,19 +107,20 @@ node --experimental-strip-types -e '
 const fs=require("fs");
 for (const f of ["src/analyzer.ts","src/summarizer.ts"]) {
   const s=fs.readFileSync(f,"utf8");
-  const re=/const (\w*PROMPT\w*) = `([\s\S]*?)`;/g; let m;
+  // 只匹配 OTUS_ 前缀的 system prompt，避免误统计同名的普通常量
+  const re=/const (OTUS_\w*PROMPT) = `([\s\S]*?)`;/g; let m;
   while((m=re.exec(s))) console.log(`${m[1]}: ${m[2].split("\n").length} 行 / ${m[2].length} 字符`);
 }'
 ```
 
-**当前基线**（2026-10-24 重构后）：
+**当前基线**（2026-10-24 更新，`recompute` 后实测）：
 
-| 提示词 | 行数 | 字符 |
-| :--- | ---: | ---: |
-| `OTUS_ANALYZER_SYSTEM_PROMPT` | 62 | 2214 |
-| `OTUS_THEME_SYSTEM_PROMPT` | 49 | 1447 |
-| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 18 | 633 |
-| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 18 | 448 |
+| 提示词 | 行数 | 字符 | 唯一判据 |
+| :--- | ---: | ---: | :--- |
+| `OTUS_ANALYZER_SYSTEM_PROMPT` | 68 | 2363 | 实际产出了什么 |
+| `OTUS_THEME_SYSTEM_PROMPT` | 49 | 1447 | 实际产出了什么 |
+| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 18 | 633 | 忠实叙述事实，不加工 |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 18 | 448 | ⚠️ 待补（见 3.1 说明） |
 
 ### 3.5 改动提示词后的验证流程
 
