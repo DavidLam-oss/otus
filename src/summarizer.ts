@@ -24,64 +24,55 @@ const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人
    - 输出开头不要有任何前言、说明或代码块标记。
 `;
 
-const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。你会收到某一天全部会话的清单，
-每条包含：编号、时间、时长、使用过的 App、分析标题；
-部分会话还会带有简短摘要（summary）、话题标签（topics）、以及高信号条目（signals，
-如涉及的文件/代码行、做出的关键决策）。缺失的字段表示该会话没有更多可用信息。
+const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。输入是某一天全部会话的清单，
+每条含编号、时间、时长、用过的 App、分析标题；部分带摘要、话题标签、高信号条目。
+缺失字段表示该会话没有更多可用信息。
 
-你的任务是三件事：
-(A) 把这些会话归并成若干个「核心主题」，并给每个主题起一个简短名字。
-(B) 修正每条会话的标题（title）——单条标题是由只看到这一段活动的模型生成的，
-    经常被侧边栏/历史列表里出现的项目名带偏，需要你结合前后文纠正。
-(C) 为每个主题写一段「当日叙述」（narrative）——用一段连贯的话，
-    说清当天这个主题实际做了哪几件事、走了什么过程，像日记一样自然。
+任务：(A) 归并成若干「核心主题」并命名；(B) 修正每条会话标题；(C) 为每个主题写一段「当日叙述」。
+标题和叙述都要用简体中文，专有名词保留原样。最终输出严格 JSON，见末尾格式。
 
-判定原则（按优先级）：
-1. **看前后文，不看单个会话**。同一段时间连续做同一类事，即使单条标题措辞不同，也应归为同一主题。
-2. 判断依据是「实际在产出什么」，不是「打开了哪个 App」，
-   也不是「侧边栏/历史列表里出现了什么」。
-   例：用 Obsidian 和 WorkBuddy 写关于某产品的公众号文章 → 主题是「写公众号文章」，
-   即使侧边栏里出现过别的项目名，也不代表在改那个项目的代码。
-3. 只有当会话里**明确出现该项目的产物**（该仓库的 Issue/PR、代码文件、构建命令、git 操作）
-   才可以把主题或标题命名为该项目的名字。
-4. 应用侧边栏、工作区列表、历史任务标题里出现的项目名，**不能**作为命名依据。
-   （这是最常见的误判来源：用户在 A 应用里做某件事，A 的侧边栏恰好列出 B 项目，
-   模型就把这条会话说成「在搞 B」。）
-5. 主题数量控制在 3~12 个之间。宁可少而准，不要多而碎。
-6. 时间上明显分散、内容也无关的活动，应分到不同主题。
+## 唯一判据：实际产出了什么
 
-关于「当日叙述」(C) 的要求：
-- 用**一段连贯的话**（不是分条 bullet），像日记一样把这件事的来龙去脉讲清楚。
-- 同一件事的不同侧面要合在一起讲（例如「注册 Webhook」「删旧 Webhook」「改注册脚本域名」
-  「Webhook 随 push 生效」都是同一件事，应合并成一句叙述，而不是分开罗列）。
-- **有多少说多少，不要为凑字数硬写**：如果这个主题只发生了一件事，就一两句话讲完，
-  不要编造细节、不要凑长度。
-- 具体但不啰嗦：带上关键对象名、数字（如「修通 License.ts 字段名 Bug」「225 BPM」），
-  但**不要罗列所有细节**——细节留在数据库里，报告只做概览回顾。
-- 用自然的书面语，不用「在 XX 中做 YY」这种把 App 当主语的句式。
+App 名字、侧边栏里的项目名、历史任务标题都只是环境背景，不是产出。
+由此三条：
+1. 归并看内容不看 App：连续做同一类事就归同一主题，哪怕措辞不同、App 换了。
+2. 命名只认产物：主题名/标题出现项目名，必须因为输入里出现了该项目产物
+   （仓库 Issue/PR、代码文件、构建输出、git 操作、发布页面）。侧边栏出现的一律不算。
+3. 专注度看是否同一件事贯穿，不看切换次数。activity 字段若带切换质量指标：
+   revisitSwitches 高而 newAppSwitches 低 = 工具链循环，属专注
+   （Chrome 看效果 → 编辑器改代码 → 终端跑构建，每 20~30 秒一轮就是这么回事）；
+   只有 veryShortSwitches 高（<5 秒切走）且 dominantAppShare 低才可能是真碎片；
+   两者混杂时按主导行为定性，另一面最多顺带提一句。
 
-输出格式（严格 JSON，不要任何解释文字）：
-{
-  "themes": [
-    {
-      "name": "主题名（<= 16 字，具体而非空泛）",
-      "sessionIds": ["s0", "s3", "s7"],
-      "narrative": "这个主题当天做了什么的一段连贯叙述（<= 150 字，自然口语，不凑字数）"
-    }
-  ],
-  "titles": [
-    { "id": "s0", "title": "修正后的标题（<= 20 字，直述实际做了什么）" }
-  ]
-}
+## 正反对照
 
-要求：
-- 每个会话编号必须且只能出现在一个主题里，不得遗漏、不得重复。
-- 只能使用输入中出现过的会话编号。
-- titles 里请为**每一条**会话都给出修正标题；若原标题已准确，可原样返回。
-- 标题要直述实际产出（如「与 AI 排查菜单栏崩溃并修复」），
-  不要写「在 XX 中做 YY」这种把 App 当主语的句式。
+输入：41 分钟，切换 80 次，App 是 Chrome/Obsidian/WorkBuddy/微信，
+窗口标题出现「SEO优化指南 - Google Gemini」「nexty.dev 模板」，
+单条标题是「规划 airapvideos.org 参赛 SEO 策略」。
 
-`;
+错（只看 App 和切换次数）：主题「多应用零散切换」，叙述「来回切、没干正事、注意力被切碎」。
+错在：80 次里 75 次是回访 6 个 App 的循环，标题始终围绕 SEO 与建站模板，这是专注的工具链工作；
+且「没干正事」是评判不是事实。
+
+对（看产出）：主题「AI Rap 上站 SEO 策略」，叙述「对着比赛做整体规划，先把规则在 Gemini 里
+拆开，定下排名与流量双指标的打法，梳理了 TDK、Schema 和长尾案例库，又调研 nexty.dev 模板，
+最后拍板用它建站。中间夹了些零碎查看。」
+
+## 其他
+
+- 主题 3~12 个，宁可少而准。时间明显分散且内容无关的分到不同主题。
+- 叙述是一段连贯的话（不是 bullet），像日记。有多少说多少，不编造、不凑长度。
+- 具体但不啰嗦：带关键对象名和数字，但不罗列细节。
+- 用自然书面语，不写「在 XX 中做 YY」这种把 App 当主语的句式。
+- 效率不高也如实写在做什么，不下「没干正事」这类评判。
+
+## 输出格式（严格 JSON）
+
+{"themes":[{"name":"<=16字，具体而非空泛","sessionIds":["s0","s3"],"narrative":"<=150字，一段连贯叙述"}],
+ "titles":[{"id":"s0","title":"<=20字，直述实际做了什么"}]}
+
+- 每个编号必须且只能出现在一个主题里，不得遗漏、不得重复，只能用输入中出现过的编号。
+- titles 为每一条会话都给出标题；原标题已准确则原样返回。`;
 
 const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是一位敏锐的个人开发导师与效能分析专家。根据用户全天的活动骨架与统计数据，以犀利、具体、直击要害的口吻生成 4-6 条高质量的「工作流深度复盘与洞察」卡片。
 
@@ -566,6 +557,14 @@ export class ActivitySummarizer {
         const brief: any = {};
         if (typeof act.focusSwitches === "number") brief.focusSwitches = act.focusSwitches;
         if (typeof act.clickRate === "number") brief.clickRate = act.clickRate;
+        // 切换质量：区分「工具链循环」（回访已用过的 App）和「真正被打断」（不断跳到新 App）。
+        // 只给 focusSwitches 会让模型把高切换率的深度工作误判成「注意力碎片化」。
+        if (typeof act.revisitSwitches === "number") brief.revisitSwitches = act.revisitSwitches;
+        if (typeof act.newAppSwitches === "number") brief.newAppSwitches = act.newAppSwitches;
+        if (typeof act.veryShortSwitches === "number") brief.veryShortSwitches = act.veryShortSwitches;
+        if (typeof act.distinctApps === "number") brief.distinctApps = act.distinctApps;
+        if (typeof act.dominantAppShare === "number") brief.dominantAppShare = act.dominantAppShare;
+        if (typeof act.switchesPerMinute === "number") brief.switchesPerMinute = act.switchesPerMinute;
         if (Object.keys(brief).length > 0) item.activity = brief;
       }
       return item;

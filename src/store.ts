@@ -361,21 +361,73 @@ export class ActivityStore {
     let clickCount = 0;
     let lastFocusKey: string | null = null;
     let focusSwitches = 0;
+
+    // 切换质量分析：区分「有目的的工具链回访」和「真正被打断」。
+    //
+    // 为什么要区分：做网站/改代码时，Chrome 看效果 → 编辑器改代码 → 终端跑构建
+    // 是一个每 20-30 秒循环一次的正常工作流，切换次数极高但全程同一件事；
+    // 而「写文档 → 切微信回消息 → 切回来」虽然也只算一次切换，性质却是打断。
+    // 只看 focusSwitches 会把前者误判成「注意力被切碎」。
+    //
+    // 判定依据：
+    //   - revisitSwitches: 切到的 App 在本会话里访问过（回访）→ 工具链切换，不算碎片
+    //   - newAppSwitches:  切到本会话里第一次出现的 App     → 探索/打断，计入碎片
+    //   - veryShortSwitches: 停留 < 5 秒就切走（扫一眼就走）
+    //   - avgDwellMs: 每次切换后的平均停留时长
+    //   - distinctApps: 本会话触碰过的不同 App 数
+    //   - dominantAppShare: 主 App 占用的焦点轮次比例（越集中越说明在专注）
+    const appVisitCount = new Map<string, number>();
+    const switchTimestamps: number[] = [];
+    let revisitSwitches = 0;
+    let newAppSwitches = 0;
+    let lastFocusTs = 0;
+    let veryShortSwitches = 0;
+
     for (const ev of events) {
       if (ev.kind === "click") {
         clickCount++;
-      } else if (ev.kind === "app_focus") {
-        const key = String(ev.data?.bundleId ?? ev.appName ?? "");
-        if (key) {
-          if (lastFocusKey !== null && key !== lastFocusKey) focusSwitches++;
-          lastFocusKey = key;
-        }
+        continue;
       }
+      if (ev.kind !== "app_focus") continue;
+
+      const key = String(ev.data?.bundleId ?? ev.appName ?? "");
+      if (!key) continue;
+
+      const seen = appVisitCount.get(key) ?? 0;
+      appVisitCount.set(key, seen + 1);
+
+      if (lastFocusKey !== null && key !== lastFocusKey) {
+        focusSwitches++;
+        if (seen > 0) revisitSwitches++;
+        else newAppSwitches++;
+        if (lastFocusTs > 0) {
+          switchTimestamps.push(lastFocusTs);
+          if (ev.timestamp - lastFocusTs < 5000) veryShortSwitches++;
+        }
+        lastFocusTs = ev.timestamp;
+      } else if (lastFocusKey === null) {
+        lastFocusTs = ev.timestamp;
+      }
+      lastFocusKey = key;
     }
+
+    const distinctApps = appVisitCount.size;
+    let topVisits = 0;
+    let totalVisits = 0;
+    for (const v of appVisitCount.values()) {
+      totalVisits += v;
+      if (v > topVisits) topVisits = v;
+    }
+    const dominantAppShare = totalVisits > 0 ? Math.round((topVisits / totalVisits) * 100) / 100 : 0;
+    const avgDwellMs = switchTimestamps.length > 0
+      ? Math.round((sess.durationMs ?? 0) / (switchTimestamps.length + 1))
+      : (sess.durationMs ?? 0);
 
     const activeSeconds = Math.max(0, Math.round((sess.durationMs ?? 0) / 1000));
     const minutes = Math.max(1, Math.round((sess.durationMs ?? 0) / 60000));
     const clickRate = Math.round((clickCount / minutes) * 10) / 10;
+    // 每分钟切换次数：比裸的 focusSwitches 更能横向比较长短会话
+    const switchesPerMinute = Math.round((focusSwitches / minutes) * 10) / 10;
 
     const prev = sess.signals && typeof sess.signals === "object" ? sess.signals : {};
     const next = {
@@ -385,7 +437,15 @@ export class ActivityStore {
         clickCount,
         clickRate,
         activeSeconds,
-        eventCount: events.length
+        eventCount: events.length,
+        // 切换质量（区分工具链循环 vs 真正打断）
+        revisitSwitches,
+        newAppSwitches,
+        veryShortSwitches,
+        avgDwellMs,
+        distinctApps,
+        dominantAppShare,
+        switchesPerMinute
       }
     };
     this.db

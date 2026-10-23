@@ -39,7 +39,8 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
 3. **高保真记录与总结机制**：
    - **会话切分与总结**：采用 Jaccard 相似度 $\ge 0.18$ 聚类，严格遵循防幻觉 Hard Rules 约束体系；
    - **隐私保护**：入库与调用 LLM 前必须经过 `src/redactor.ts`（脱敏 API Key、私钥、Token）；
-   - **图像判重**：截图经 `sips` 压缩至 1280px + 质量 40，并通过 `native/img-diff.swift`（32-bin 归一化灰度直方图 + 巴氏距离）过滤 $<5\%$ 的微变静止帧；
+   - **图像判重**：截图经 `sips` 压缩至 2560px + 质量 55（对齐 Alma，约 385KB/张），并通过 `native/img-diff.swift`（32-bin 归一化灰度直方图 + 巴氏距离）过滤 $<5\%$ 的微变静止帧；判重用独立的 160×90 内存缩略图，与落盘分辨率无关；
+   - **三级存储轮转**（对齐 Alma）：hot 1 天保留原图 → warm 7 天后重压至 1280×720@40 → cold 30 天后重压至 640×360@30 → 超期删文件保留 OCR 文本；容量超 10GB 时按时间从旧到新清理至 8GB 水位；
    - **系统休眠**：监听 `willSleep` / `didWake` 广播，合盖自动闭合会话，唤醒干净重置。
 4. **macOS 合规打包**：
    - 应用托管在 `/Applications/Otus.app`；
@@ -48,7 +49,76 @@ Welcome to **Otus (鸺鹠)**! This document provides crucial context, architectu
 
 ---
 
-## 3. 文档与维护规范
+## 3. LLM 提示词工程规范（硬性约束）
+
+> [!IMPORTANT]
+> **提示词不是规则清单。** 每遇到一个新错判就往提示词里加一条「不要 XXX」，
+> 是最容易失控的反模式：规则互相冲突、模型抓不住重点、token 成本无限上涨。
+
+### 3.1 唯一判据原则
+
+给 LLM 的每个提示词，都必须先回答一个问题：**这段内容真正要判断的单一标准是什么？**
+把它放在最前面，用一句话说清。其余所有规则都必须是这条标准的**派生**，而不是并列的新规则。
+
+Otus 里已有的判据：
+
+| 提示词 | 唯一判据 |
+| :--- | :--- |
+| `OTUS_ANALYZER_SYSTEM_PROMPT` | 用户**实际产出了什么** |
+| `OTUS_THEME_SYSTEM_PROMPT` | 用户**实际产出了什么** |
+| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 忠实叙述事实，不加工 |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 只基于给定事实做推断 |
+
+### 3.2 用示例替代规则堆叠
+
+**一个正反对照示例 ≈ 4 条否定规则**，且效果通常更好，因为示例能让模型同时看到
+「什么是对的」和「几种错误长什么样」。
+
+新增规则前先自问：**能不能用一个示例说清？** 能，就用示例。
+
+### 3.3 三条反模式（严禁）
+
+1. **禁止「不要 XXX」式的否定规则堆叠**。若已有 3 条以上同源否定规则，说明该重构了。
+2. **禁止为单个历史案例加规则**。先判断它是「判据没写清」还是「判据错了」，
+   修正判据本身，而不是打补丁。
+3. **禁止让提示词只增不减**。每次改动都要看字符数变化，只涨不降要给出理由。
+
+### 3.4 规模上限与体检
+
+- 单条 system prompt **不超过 2500 字符**（JSON schema 输出格式部分不计入）；
+- 超过时优先做**压缩重写**，不是拆分；
+- 每次修改提示词后，用下方命令体检，并把字符数变化写进 commit message：
+
+```bash
+node --experimental-strip-types -e '
+const fs=require("fs");
+for (const f of ["src/analyzer.ts","src/summarizer.ts"]) {
+  const s=fs.readFileSync(f,"utf8");
+  const re=/const (\w*PROMPT\w*) = `([\s\S]*?)`;/g; let m;
+  while((m=re.exec(s))) console.log(`${m[1]}: ${m[2].split("\n").length} 行 / ${m[2].length} 字符`);
+}'
+```
+
+**当前基线**（2026-10-24 重构后）：
+
+| 提示词 | 行数 | 字符 |
+| :--- | ---: | ---: |
+| `OTUS_ANALYZER_SYSTEM_PROMPT` | 62 | 2214 |
+| `OTUS_THEME_SYSTEM_PROMPT` | 49 | 1447 |
+| `OTUS_NARRATIVE_SYSTEM_PROMPT` | 18 | 633 |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 18 | 448 |
+
+### 3.5 改动提示词后的验证流程
+
+1. 类型检查通过；
+2. 用真实数据跑一次 `otus report today --force`，人工核对主题名与叙述是否准确；
+3. 特别检查是否出现评判性结论（如「没干正事」「注意力被切碎」）——
+   报告只陈述事实与产出，不做人格或效率评判；
+4. 更新 3.4 的基线表。
+
+---
+
+## 4. 文档与维护规范
 
 - 所有过程设计文档、调研规划和临时笔记统一存放于 `docs/` 目录；
 - `docs/` 必须保留在 `.gitignore` 中，避免污染 Git 提交历史。
