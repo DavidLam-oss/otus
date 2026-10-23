@@ -11,10 +11,10 @@ const OTUS_ANALYZER_SYSTEM_PROMPT = `你是桌面活动记录器的微会话分�
 
 App 名字、侧边栏里的项目名、历史任务标题都只是环境背景，不是产出。
 由此三条：
-1. 命名只认产物：title 要直述实际做了什么（「修通 License.ts 字段名 Bug」），
+1. title 直述实际做了什么（「修通 License.ts 字段名 Bug」），
    不写「在 Chrome 中浏览网页」这种把 App 当主语的空话。
-2. project 只认产物：只有输入里出现了该项目自身的产物（仓库 Issue/PR、代码文件、
-   构建输出、git 操作、发布页面）才填项目名。仅借用某 App 写稿/做图/整理资料、
+2. project 只有输入里出现了该项目自身的产物（仓库 Issue/PR、代码文件、构建输出、
+   git 操作、发布页面）才填。仅借用某 App 写稿/做图/整理资料、
    或只是谈论检索某项目，都填 null。侧边栏/工作区列表里出现的项目名一律不算。
 3. 专注度看是否同一件事贯穿，不看 App 切换多少。
 
@@ -30,15 +30,20 @@ App 名字、侧边栏里的项目名、历史任务标题都只是环境背景�
 对：title「修复 Issue #83 的会话切分」、project「obsidian-wechat-converter」、
 project_evidence「src/recorder.ts」
 
+输入：反复调试截图体积，最后确定对齐 Alma 的 2560/55 参数并补全三级轮转。
+对：memoryCandidates「Otus 截图参数对齐 Alma：2560 宽 / quality 55」
+
+输入：在 Chrome 里翻了几页新闻、刷了会儿微博，没做任何产出。
+对：memoryCandidates 空数组
+
 ## 硬性要求
 
-- title/description/topics/highlights 一律简体中文；专有名词（项目名、PR 号、函数名、
-  API、分支、英文产品名）保留原样，不生硬汉化。
-- 严禁编造事实。PR 号、Issue、Commit、版本号、人名必须在输入中原样出现。
-- project 非 null 时，project_evidence 必须逐字复制输入中的连续原文片段（不改写、不概括、
-  不翻译）；找不到这样的原文，project 与 project_evidence 都填 null。
+- 中文输出，专有名词（项目名、PR 号、函数名、API、分支、英文产品名）保留原样。
+- 严禁编造。PR 号、Issue、Commit、版本号、人名必须在输入中原样出现。
+- project 非 null 时，project_evidence 逐字复制输入中的连续原文片段（不改写、不概括、
+  不翻译）；找不到就双双填 null。
 - worth 为 false 仅限：纯锁屏（loginwindow/ScreenSaver/LockScreen）、无输入闲置挂机、
-  OCR 无任何实质操作内容。注意：切换 App 多、页面看着杂，不等于没干活，不要因此判 false。
+  OCR 无实质操作内容。切换 App 多、页面看着杂，不等于没干活。
 
 ## 输出格式（严格 JSON）
 
@@ -62,7 +67,8 @@ project_evidence「src/recorder.ts」
     "decisions": string[],
     "urls": string[]
   },
-  "memoryCandidates": [],
+  "memoryCandidates": string[],      // 值得长期记住的结论/决定/踩坑，每条一句话，<=40字
+                                     // 没有可长期复用的结论就给空数组，不要凑
   "worthKnowledge": boolean,         // 是否含可复用知识（技术方案、文档、踩坑经验）
   "isMeeting": boolean               // 是否音视频会议/通话
 }`;
@@ -386,7 +392,7 @@ export class ActivityAnalyzer {
     return inter / (A.size + B.size - inter);
   }
 
-  public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "failed"> {
+  public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "not_worth" | "failed"> {
     // 0. 质量前置过滤（对齐 Alma 的 processSession 门槛）
     // 与「交给 LLM 判 not_worth」不同：低于确定阈值时根本不该消耗 LLM 调用。
     // 注意用「或」语义——任一指标达标就仍要分析，避免误杀。

@@ -279,6 +279,41 @@ async function main() {
       break;
     }
 
+    case "recompute-signals": {
+      // 回填存量会话的 signals.activity。
+      //
+      // 为什么需要：信号是在会话闭合时派生并落库的，之后新增了计算字段
+      // （如切换质量 revisitSwitches / newAppSwitches），
+      // 老会话不会自动补上，于是 summarizer 拿不到这些字段，
+      // 提示词里「revisitSwitches 高 = 工具链循环」那套判断对历史数据全部失效。
+      const days = Number(args[1] && !args[1].startsWith("--") ? args[1] : 7);
+      const since = Date.now() - days * 24 * 3600 * 1000;
+      // listSessions 把 limit 钳在 2000，长历史要分页扫完，不能只处理第一批。
+      let done = 0;
+      let scanned = 0;
+      let cursor: number = since;
+      for (;;) {
+        const batch = store.listSessions({ since: cursor, limit: 2000 });
+        if (batch.length === 0) break;
+        for (const s of batch) {
+          try {
+            store.updateSessionSignals(s.id);
+            done++;
+          } catch (e) {
+            console.warn(`[Otus] 会话 ${s.id} 信号重算失败：`, String((e as any)?.message || e));
+          }
+        }
+        scanned += batch.length;
+        const lastAt = Number(batch[batch.length - 1].startedAt);
+        // 没有推进（同毫秒多条）时强制 +1，避免死循环
+        cursor = lastAt > cursor ? lastAt + 1 : cursor + 1;
+        if (cursor > Date.now()) break;
+        if (batch.length < 2000) break;
+      }
+      console.log(`[Otus] 已重算 ${done}/${scanned} 个会话的行为信号（近 ${days} 天）`);
+      break;
+    }
+
     case "report": {
       const dateKey = resolveDateKey(args[1] && !args[1].startsWith("--") ? args[1] : undefined);
       const force = args.includes("--force");

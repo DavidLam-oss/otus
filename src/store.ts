@@ -350,13 +350,28 @@ export class ActivityStore {
    *   - clickCount / clickRate: 点击数 / 每分钟点击数（交互密度）
    *   - activeSeconds: 会话时长（秒）
    *   - eventCount: 事件总数
+   *   - 切换质量（见下方注释）：revisitSwitches / newAppSwitches /
+   *     veryShortSwitches / avgDwellMs / distinctApps / dominantAppShare /
+   *     switchesPerMinute
    *
    * 只写 signals.activity，保留 signals 中其它已有字段（如后续的 focusWindows/keywords）。
+   * 注意：activity 下的字段名是 summarizer 消费的契约（src/summarizer.ts 的
+   * item.activity），改名要两边一起改。
    */
   public updateSessionSignals(sessionId: string): void {
     const sess = this.getSession(sessionId);
     if (!sess) return;
-    const events = this.listEvents(sessionId, 5000);
+
+    // 只取 app_focus 与 click 两类事件：这是本函数唯一的输入。
+    // 不用 listEvents(sessionId, N) —— 它按 timestamp ASC 取前 N 条，
+    // 会话事件超过 N 时会把**尾部**静默丢掉，导致切换数系统性低估。
+    // 这里直接在 SQL 里过滤，长会话也不会失真。
+    const events = this.db.prepare(`
+      SELECT kind, timestamp, app_name, data
+      FROM activity_events
+      WHERE session_id = ? AND kind IN ('app_focus', 'click')
+      ORDER BY timestamp ASC
+    `).all(sessionId) as any[];
 
     let clickCount = 0;
     let lastFocusKey: string | null = null;
@@ -390,7 +405,16 @@ export class ActivityStore {
       }
       if (ev.kind !== "app_focus") continue;
 
-      const key = String(ev.data?.bundleId ?? ev.appName ?? "");
+      // data 列是 JSON 字符串（裸 SQL 取出的原始值），要自己解析。
+      // 解析失败时退回 app_name，不能让整条事件被丢掉。
+      let bundleId: string | undefined;
+      try {
+        const d = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+        if (d && typeof d === "object") bundleId = d.bundleId;
+      } catch {
+        // 忽略非法 JSON，走 app_name 兜底
+      }
+      const key = String(bundleId ?? ev.app_name ?? "");
       if (!key) continue;
 
       const seen = appVisitCount.get(key) ?? 0;
