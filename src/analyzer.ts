@@ -5,7 +5,7 @@ import type { OtusConfig } from "./config.ts";
 import { redactSensitiveText } from "./redactor.ts";
 
 const OTUS_ANALYZER_SYSTEM_PROMPT = `你是桌面活动记录器的微会话分析器。输入是一个工作会话的 OCR 文本、用过的 App、
-浏览器访问记录和窗口标题。输出结构化 JSON，见末尾格式。
+浏览器访问记录和窗口标题。按末尾格式输出结构化 JSON。
 
 ## 唯一判据：实际产出了什么
 
@@ -40,12 +40,10 @@ project「obsidian-wechat-converter」、project_evidence「obsidian-wechat-conv
 输入：在 Chrome 里刷了几页新闻、刷了会儿微博，没做任何产出。
 对：memoryCandidates 空数组
 
-## 硬性要求
+## 其余要求
 
 - 中文输出，专有名词（项目名、PR 号、函数名、API、分支、英文产品名）保留原样。
-- 严禁编造。PR 号、Issue、Commit、版本号、人名必须在输入中原样出现。
-- project_evidence 逐字复制输入中的连续原文片段（不改写、概括、翻译）；
-  找不到就与 project 双双填 null。
+- project_evidence 逐字复制输入中的连续原文片段，找不到就与 project 双双填 null。
 - worth 为 false 仅限：纯锁屏（loginwindow/ScreenSaver/LockScreen）、无输入闲置挂机、
   OCR 无实质操作内容、漫无目的刷网页/刷社交。切换 App 多、页面杂不等于没干活，
   但只是翻过去、没产出东西就是 false。
@@ -53,23 +51,28 @@ project「obsidian-wechat-converter」、project_evidence「obsidian-wechat-conv
 
 ## 输出格式（严格 JSON）
 
+下面每个字段都必须出现。注释说明该填什么，JSON 里不要写注释。
+凡声称「原文出现过」的字段（entities、project_evidence），
+都必须在输入里逐字找到对应片段，找不到该字段就给 [] 或 null。
+
 {
-  "worth": boolean,                  // 实质折腾/编码/深度阅读/沟通学习为 true
-  "title": string,                   // <=30 字中文短语，直击核心行动与产出
-  "description": string,             // <=120 字，1-2 句概括实际操作与关键产出
-  "project": string | null,
-  "project_evidence": string | null,
-  "topics": string[],                // 2-4 个精炼标签，如 ["发布","eslint","样式调试"]
-  "highlights": string[],            // 1-3 条具体行动/产出要点，<=60 字/条
+  "worth": true=实质折腾/编码/深读/沟通学习，锁屏挂机=false,
+  "title": "<=30 字，直击核心行动与产出",
+  "description": "<=120 字，1-2 句，实际操作与关键产出",
+  "project": "项目 slug 或 null",
+  "project_evidence": "逐字原文片段，与 project 同存同亡",
+  "topics": ["2-4 个标签"],
+  "highlights": ["1-3 条要点，每条 <=60 字"],
   "entities": {
-    "prs" | "issues" | "commits": [{"label": string, "ref"?: string, "repo"?: string, "url"?: string}],
-    "people": [{"handle": string, "name"?: string}],
-    "identifiers" | "repos" | "versions" | "events" | "decisions" | "urls": string[]
-  },                                 // 只在输入原文出现过才填，宁空勿猜
-  "memoryCandidates": string[],      // 值得长期记住的结论/决定/踩坑，每条 <=40字；
-                                     // 没有可长期复用的结论就给空数组，不要凑
-  "worthKnowledge": boolean,         // 是否含可复用知识（技术方案、文档、踩坑经验）
-  "isMeeting": boolean               // 是否音视频会议/通话
+    "prs": [{"label": "标题", "ref": "#83", "repo": "owner/repo", "url": "https://..."}],
+    "issues": [], "commits": [],
+    "people": [{"handle": "@someone", "name": "显示名"}],
+    "identifiers": [], "repos": [], "versions": [],
+    "events": [], "decisions": [], "urls": []
+  },
+  "memoryCandidates": ["长期可复用的结论/决定/踩坑，每条 <=40 字，没有给 []"],
+  "worthKnowledge": true=含可复用知识（方案/文档/踩坑）,
+  "isMeeting": true=音视频会议或通话
 }`;
 
 export class ActivityAnalyzer {

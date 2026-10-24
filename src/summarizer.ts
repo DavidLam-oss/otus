@@ -5,24 +5,32 @@ import type { OtusConfig } from "./config.ts";
 import { tokenize, tfidf, cosine, hacCluster, mmrSelect } from "./math-utils.ts";
 import { redactSensitiveText } from "./redactor.ts";
 
-const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是一位极客程序员的专属个人折腾日记执笔人。你将根据用户电脑上的真实活动骨架数据，撰写一篇真实、有洞察、略带极客自嘲风格的第一人称「个人折腾日记」。
+// 改写说明（2026-10-24）：原版是 9 条「严禁/拒绝/不要」的否定规则堆砌，
+// 违反 AGENTS.md §3.3 第 1 条。现改为「一条判据 + 一个正向范例」，
+// 所有约束都能从范例里读出来，不再逐条否定。
+const OTUS_NARRATIVE_SYSTEM_PROMPT = `你是极客程序员的「个人折腾日记」执笔人。
 
-硬性规则（Hard rules）：
-1. 语言要求（极其严格）：必须始终使用自然、凝练的简体中文撰写！严禁出现整段英文。
-2. 视角与语调：
-   - 采用第一人称视角（「我」或省略主语），语调像一名高段位独立开发者或极客在自己的独立博客记录当日手记。
-   - 拒绝假大空的汇报官话，拒绝问候语或总结套话。
-   - 偏好有力的动词：「搞定 / 连发三版 / 踩坑 / 闭环 / 优化 / 重构 / 砍掉」，少用「查看了 / 浏览了 / 打开了」。
-3. 严格的事实边界：
-   - 严禁编造任何未在骨架中出现的事实、PR 编号、版本号或项目名。所有 PR、版本号、Commit、人名必须原样保留。
-   - 严禁改写任何数字（分钟数、session 数、百分比、版本号），必须与骨架完全一致。
-   - 严禁新增骨架中不存在的 URL；骨架中的链接必须保留。
-4. 结构规范：
-   - **不要输出一级标题（# 开头的那一行）**，它由程序自动生成，你输出的内容会直接拼在它下面。
-   - 保持每个核心主题一个二级标题（## 主题名），标题下的「_X 分钟 · Y 个 session_」统计行必须保留。
-   - 保留骨架中的重点链接与行内代码块。
-   - 输出开头不要有任何前言、说明或代码块标记。
-`;
+## 唯一判据：照骨架忠实还原，只改语气不做加工
+
+骨架里的数字、PR 号、版本号、URL、项目名是既成事实，逐字保留；
+你的工作是把这些事实用第一人称、凝练的简体中文讲成一段手记。
+
+## 范例（照这个形态输出）
+
+## 修通截图体积与三级轮转
+_78 分钟 · 2 个 session_
+
+一晚上都在跟截图体积较劲。先把参数对齐到 2560/55，发现 warm 层缺了重压逻辑，
+补上 1280x720@40 之后又把 cold 层一起补齐。参考 [Alma 的轮转实现](https://example.com/a)，
+最后跑一遍确认 hot 1 天 / warm 7 天 / cold 30 天全都对上了。
+
+## 你该写的
+
+- 繁体或英文段落 → 简体中文；专有名词、代码、命令保留原样
+- 「我查看了 / 我打开了」这类流水账 → 「搞定 / 踩坑 / 连发三版 / 砍掉」这类有力动词
+- 每行事实都可以在骨架里找到对应，语气可以自嘲，事实不能变
+
+输出直接从第一个「## 」开始，到最后一个主题结束。`;
 
 const OTUS_THEME_SYSTEM_PROMPT = `你是活动记录的全局主题归纳器。输入是某一天全部会话的清单，
 每条含编号、时间、时长、用过的 App、分析标题；部分带摘要、话题标签、高信号条目。
@@ -69,10 +77,12 @@ App 名字、侧边栏里的项目名、历史任务标题都只是环境背景�
 ## 输出格式（严格 JSON）
 
 {"themes":[{"name":"<=16字，具体而非空泛","sessionIds":["s0","s3"],"narrative":"<=150字，一段连贯叙述"}],
- "titles":[{"id":"s0","title":"<=20字，直述实际做了什么"}]}
+ "titleFixes":[{"id":"s3","title":"<=20字，直述实际做了什么"}]}
 
 - 每个编号必须且只能出现在一个主题里，不得遗漏、不得重复，只能用输入中出现过的编号。
-- titles 为每一条会话都给出标题；原标题已准确则原样返回。`;
+- titleFixes 只列需要纠正的会话：原标题把 App 当主语、空壳无信息、或与本会话实际内容
+  不符时才给新标题。原标题已经准确的就不要出现在数组里（不返回即保留原标题）。
+  这一条决定了输出体积，主题归属正确时 titleFixes 常常是空数组。`;
 
 const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是个人折腾日记的观察者。根据用户全天的活动骨架与统计，生成 4-6 张「今天怎么用工具」的观察卡片。
 
@@ -83,20 +93,21 @@ const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是个人折腾日记的观察者。根�
 
 ## 输出格式（严格 JSON 数组）
 
-[
-  {
-    "type": "good" | "warn" | "ai",
-    "tag": string,
-    "title": string,
-    "content": string
-  }
-]
-
 - type: "good" 有明确产出的推进, "warn" 反复尝试后仍未闭合的环节, "ai" 工具/提示词/自动化用法
-- tag: 2-6 字，描述观察到的做法，不评价好坏（如"调试试探"、"版本对比"、"脚本化"、"文档同步"）
+- tag: 2-6 字，描述观察到的做法，不评价好坏
 - title: <= 25 字
 - content: 2-3 句（<= 160 字），可用 **粗体** 或 \`代码\`
-`;
+
+## 范例（照这个语气写；tag 与 title 里没有任何评价词）
+
+[
+  {"type":"good","tag":"版本对比","title":"三版灰度后切回主分支",
+   "content":"同一个改动连发 **三个版本**，逐版灰度验证后才合并。对比的维度是安装耗时与内存占用。"},
+  {"type":"warn","tag":"接口重试","title":"第三方回调仍未跑通",
+   "content":"webhook 重试了 \`4\` 轮，签名校验始终不通过，最后停在抓包对比这一步。"},
+  {"type":"ai","tag":"提示词分层","title":"把长提示词拆成判据加范例",
+   "content":"用一条判据加一个正反例替换掉了 \`9\` 条否定规则，输出反而更稳。"}
+]`;
 
 export interface ThemeCluster {
   key: string;
@@ -459,6 +470,54 @@ export class ActivitySummarizer {
     };
   }
 
+  /**
+   * 在段落边界截断，而不是硬切字符。
+   *
+   * 直接 slice(0, 3000) 会切在单词或 Markdown 标记中间，
+   * 送给模型的是半句破碎文本，反而更容易诱发补全幻觉。
+   * 这里优先在 80% 预算之后找最后一个空行；找不到再退到最后一个换行；
+   * 都没有才硬切（说明整段没有换行，此时硬切是唯一选择）。
+   */
+  private truncateAtBoundary(text: string, limit: number): string {
+    if (text.length <= limit) return text;
+    const floor = Math.floor(limit * 0.8);
+    // 1) 优先段落边界（空行）
+    const para = text.lastIndexOf("\n\n", limit);
+    if (para > floor) return text.slice(0, para).trimEnd();
+    // 2) 退到行边界
+    const line = text.lastIndexOf("\n", limit);
+    if (line > floor) return text.slice(0, line).trimEnd();
+    // 3) 整段无换行，只能硬切
+    return text.slice(0, limit);
+  }
+
+  /**
+   * 剥掉模型回复外层可能带的 Markdown 围栏与前言。
+   *
+   * 提示词里写了「直接从第一个 ## 开始」，但那只是口头约定——
+   * 此前代码直接 return content.trim()，围栏一旦出现就会原样拼进正文，
+   * 报告里就会出现一个孤零零的 ```markdown 开头。
+   * 这里是代码侧兜底：围栏是格式噪声，剥掉不会丢失任何事实。
+   */
+  private stripMarkdownFence(raw: string): string {
+    let text = raw.trim();
+    // 整个回复被 ```markdown / ```md / ``` 包住的情况
+    const wrapped = text.match(/^```(?:markdown|md)?\s*\n([\s\S]*?)\n?```$/i);
+    if (wrapped) text = wrapped[1].trim();
+    // 回复以围栏开头但结尾没有闭合（模型输出被截断）
+    text = text.replace(/^```(?:markdown|md)?\s*\n/i, "").replace(/\n```\s*$/, "").trim();
+    // 正文前若有「好的」「以下是」这类前言，从第一个二级标题开始切
+    const firstHeading = text.indexOf("## ");
+    if (firstHeading > 0) {
+      // 只在开头确实是寒暄时才切，避免误伤正文里正常的 ## 引用
+      const head = text.slice(0, firstHeading).trim();
+      if (head.length > 0 && head.length <= 120 && !/[。！？\n]/.test(head.replace(/[：:]$/, ""))) {
+        text = text.slice(firstHeading);
+      }
+    }
+    return text;
+  }
+
   /** 从模型回复中提取 JSON（容忍前后多余文字、代码块围栏） */
   private cleanAndParseJSON(raw: string): any {
     try {
@@ -657,17 +716,20 @@ ${JSON.stringify(chunk, null, 2)}`;
           }
         }
 
-        // 收集标题修正建议（id -> 新标题）
-        if (Array.isArray(parsed.titles)) {
-          for (const t of parsed.titles) {
-            const id = String(t?.id || "").trim();
-            const title = String(t?.title || "").trim();
-            if (!id || !title) continue;
-            if (!byId.has(id)) continue;
-            // 只收合理长度的标题，防止模型吐长句
-            if (title.length > 40) continue;
-            titleFixes.set(id, title);
-          }
+        // 收集标题修正建议（id -> 新标题）。
+        // 提示词已改为差量返回 titleFixes，但模型偶尔仍会沿用旧字段名 titles，
+        // 两个都读，行为一致（都是「给了就覆盖」，没给就保留原标题）。
+        const fixes = Array.isArray(parsed.titleFixes)
+          ? parsed.titleFixes
+          : (Array.isArray(parsed.titles) ? parsed.titles : []);
+        for (const t of fixes) {
+          const id = String(t?.id || "").trim();
+          const title = String(t?.title || "").trim();
+          if (!id || !title) continue;
+          if (!byId.has(id)) continue;
+          // 只收合理长度的标题，防止模型吐长句
+          if (title.length > 40) continue;
+          titleFixes.set(id, title);
         }
       } catch (err: any) {
         console.warn(
@@ -1263,7 +1325,8 @@ ${safeBody}`
         }
 
         const data = await res.json() as any;
-        return data.choices?.[0]?.message?.content?.trim() || "";
+        const raw = data.choices?.[0]?.message?.content?.trim() || "";
+        return this.stripMarkdownFence(raw);
       } catch (err: any) {
         lastError = err;
         const msg = String(err?.message || err);
@@ -1326,7 +1389,7 @@ ${safeBody}`
               { role: "system", content: OTUS_INSIGHTS_SYSTEM_PROMPT },
               {
                 role: "user",
-                content: `今日全天数据：活跃时长 ${stats.totalActiveMinutes} 分钟，会话数 ${stats.sessionCount}，有效分析 ${stats.analyzedCount}，主用应用：${JSON.stringify(stats.topApps)}。\n\n活动骨架：\n${safeSkeleton.slice(0, 3000)}`
+                content: `今日全天数据：活跃时长 ${stats.totalActiveMinutes} 分钟，会话数 ${stats.sessionCount}，有效分析 ${stats.analyzedCount}，主用应用：${JSON.stringify(stats.topApps)}。\n\n活动骨架：\n${this.truncateAtBoundary(safeSkeleton, 3000)}`
               }
             ],
             temperature: 0.2
