@@ -173,10 +173,19 @@ export class ReportRenderer {
     html = html.replace(/\/\*__OTUS_TOPIC_CSS__\*\//g, cssRules.join("\n"));
 
     // 注入 JS 核心数据源 (解决原先模板数据为空的 Bug)
-    html = html.replace(/\/\*__OTUS_LABELS__\*\/\s*\{\}/g, JSON.stringify(labels));
-    html = html.replace(/\/\*__OTUS_RAW_SLOTS__\*\/\s*\[\]/g, JSON.stringify(rawSlots));
-    html = html.replace(/\/\*__OTUS_TL_DATA__\*\/\s*\[\]/g, JSON.stringify(tlData));
-    html = html.replace(/\/\*__OTUS_THEMES__\*\/\s*\[\]/g, JSON.stringify(themes));
+    // 注入前必须做 `</script>` 防逃逸：这些 JSON 里含窗口标题与 OCR 文本，
+    // 也就是「屏幕上出现过的任何字」。一旦其中出现 `</script>`，就会提前闭合
+    // script 标签，后面的内容被当作 HTML 解析，等于把任意页面内容注入报告。
+    // 把 `<` 转成 \u003c 是 JSON 合法且 HTML 安全的等价写法。
+    const safeJson = (v: unknown): string =>
+      JSON.stringify(v)
+        .replace(/</g, "\\u003c")
+        .replace(/\u2028/g, "\\u2028")
+        .replace(/\u2029/g, "\\u2029");
+    html = html.replace(/\/\*__OTUS_LABELS__\*\/\s*\{\}/g, safeJson(labels));
+    html = html.replace(/\/\*__OTUS_RAW_SLOTS__\*\/\s*\[\]/g, safeJson(rawSlots));
+    html = html.replace(/\/\*__OTUS_TL_DATA__\*\/\s*\[\]/g, safeJson(tlData));
+    html = html.replace(/\/\*__OTUS_THEMES__\*\/\s*\[\]/g, safeJson(themes));
 
     // 头部 KPI 指标卡 (100% 实时从 SQLite 会话计算，确保指标、心流热力图与时间线绝对同步)
     const liveTotalActiveMinutes = Math.round(allSessions.reduce((acc, s) => acc + (s.durationMs || 0), 0) / 60000);
@@ -356,14 +365,53 @@ export class ReportRenderer {
   }
 
   private escapeHtml(str: string): string {
-    return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+    // 单引号也要转：属性若用单引号包裹，`&#39;` 是唯一能防止属性逃逸的写法。
+    // 之前漏了它，`'` 会直接闭合属性。
+    return str
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  /**
+   * 链接协议白名单。
+   *
+   * 报告里的文本来自 OCR 与窗口标题——也就是「任何出现在用户屏幕上的字」，
+   * 包括网页内容、终端输出、别人发来的消息。如果把它们当 Markdown 链接渲染，
+   * `[点这里](javascript:alert(1))` 就会变成可点击的脚本执行入口。
+   *
+   * 只放行 http/https；其余（javascript:、data:、vbscript:、file:）一律降级为纯文本。
+   * `file:` 也不放行的理由：报告会被分享、被浏览器打开，file: 链接在别人机器上没有意义，
+   * 还会泄漏本地目录结构。
+   */
+  private isSafeUrl(url: string): boolean {
+    // 先解码再判断，防止 `java%73cript:` 这类编码绕过
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(url);
+    } catch {
+      return false; // 解码失败说明是畸形 URL，直接拒绝
+    }
+    // 去掉所有空白与控制字符后再判断（`java\tscript:` 在部分浏览器里仍会执行）
+    const normalized = decoded.replace(/[\s\u0000-\u001f\u007f]/g, "").toLowerCase();
+    return /^https?:\/\//.test(normalized);
   }
 
   private formatInline(str: string): string {
     let res = this.escapeHtml(str);
     res = res.replace(/`([^`]+)`/g, '<code style="background: rgba(255,255,255,0.08); padding: 2px 6px; border-radius: 4px; font-family: var(--mono); font-size: 12px; color: var(--cyan);">$1</code>');
     res = res.replace(/\*\*([^*]+)\*\*/g, '<strong style="color: var(--text);">$1</strong>');
-    res = res.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" style="color: var(--accent); text-decoration: underline;">$1</a>');
+    res = res.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, text: string, url: string) => {
+      // 此时 url 已被 escapeHtml 处理过，`&` 变成了 `&amp;`，判断前先还原
+      const rawUrl = url.replace(/&amp;/g, "&");
+      if (!this.isSafeUrl(rawUrl)) {
+        // 不安全就退化成「文字 + 括号里的原始链接」，保留信息但不产生可点击入口
+        return `${text} (${url})`;
+      }
+      return `<a href="${url}" target="_blank" rel="noopener noreferrer" style="color: var(--accent); text-decoration: underline;">${text}</a>`;
+    });
     return res;
   }
 }

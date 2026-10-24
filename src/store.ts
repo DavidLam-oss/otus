@@ -117,6 +117,24 @@ export class ActivityStore {
     this.initTables();
   }
 
+  /**
+   * 显式关闭数据库连接。
+   *
+   * 长驻 daemon 用不到（进程退出时内核会回收），但两类场景需要：
+   * 1. 短期 CLI 命令（`otus status` / `otus config`）——尽早释放 WAL 的 -shm/-wal，
+   *    避免和 daemon 抢锁；
+   * 2. 测试用例——同一个进程里连续开关多个库时，不关会一直持有文件句柄。
+   */
+  public close(): void {
+    try {
+      // 关库前主动 checkpoint，把 WAL 内容合并回主库，避免留下大的 -wal 文件
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {
+      // checkpoint 失败不影响关闭（如只读打开或已被别的连接持有）
+    }
+    this.db.close();
+  }
+
   private initTables(): void {
     this.db.exec("PRAGMA journal_mode = WAL;");
     this.db.exec("PRAGMA busy_timeout = 5000;");
@@ -302,42 +320,59 @@ export class ActivityStore {
     );
     const mergedApps = [...new Set([...target.appNames, ...source.appNames])];
 
-    // 1. 关联数据改挂到目标会话
-    this.db.prepare(`UPDATE activity_events SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
-    this.db.prepare(`UPDATE activity_snapshots SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
-    this.db.prepare(`UPDATE activity_ocr_frames SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+    // 整段合并涉及 6+ 次写操作，必须原子化：
+    // 中途崩溃会留下「子记录已改挂、父会话聚合字段未更新」或「源会话未删除」的脏状态，
+    // 而这种脏状态没有任何巡检能自动修复。用 BEGIN IMMEDIATE 直接拿写锁，
+    // 避免 WAL 下 BEGIN DEFERRED 在首次写时才升级锁、可能直接报 SQLITE_BUSY。
+    this.db.exec("BEGIN IMMEDIATE;");
+    try {
+      // 1. 关联数据改挂到目标会话
+      this.db.prepare(`UPDATE activity_events SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+      this.db.prepare(`UPDATE activity_snapshots SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
+      this.db.prepare(`UPDATE activity_ocr_frames SET session_id = ? WHERE session_id = ?`).run(targetId, sourceId);
 
-    // 2. 重算目标会话的聚合字段
-    const eventCount = (this.db.prepare(
-      `SELECT COUNT(*) AS c FROM activity_events WHERE session_id = ?`
-    ).get(targetId) as any)?.c ?? 0;
-    const snapStats = this.db.prepare(
-      `SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes), 0) AS bytes FROM activity_snapshots WHERE session_id = ?`
-    ).get(targetId) as any;
+      // 2. 重算目标会话的聚合字段
+      const eventCount = (this.db.prepare(
+        `SELECT COUNT(*) AS c FROM activity_events WHERE session_id = ?`
+      ).get(targetId) as any)?.c ?? 0;
+      const snapStats = this.db.prepare(
+        `SELECT COUNT(*) AS c, COALESCE(SUM(size_bytes), 0) AS bytes FROM activity_snapshots WHERE session_id = ?`
+      ).get(targetId) as any;
 
-    this.db.prepare(`
-      UPDATE activity_sessions
-      SET started_at = ?, ended_at = ?, duration_ms = ?, app_names = ?,
-          event_count = ?, snapshot_count = ?, total_bytes = ?, updated_at = ?
-      WHERE id = ?
-    `).run(
-      mergedStart,
-      mergedEnd,
-      mergedEnd - mergedStart,
-      JSON.stringify(mergedApps),
-      eventCount,
-      snapStats?.c ?? 0,
-      snapStats?.bytes ?? 0,
-      now,
-      targetId
-    );
+      this.db.prepare(`
+        UPDATE activity_sessions
+        SET started_at = ?, ended_at = ?, duration_ms = ?, app_names = ?,
+            event_count = ?, snapshot_count = ?, total_bytes = ?, updated_at = ?
+        WHERE id = ?
+      `).run(
+        mergedStart,
+        mergedEnd,
+        mergedEnd - mergedStart,
+        JSON.stringify(mergedApps),
+        eventCount,
+        snapStats?.c ?? 0,
+        snapStats?.bytes ?? 0,
+        now,
+        targetId
+      );
 
-    // 3. 删除被合并的会话
-    this.db.prepare(`DELETE FROM activity_sessions WHERE id = ?`).run(sourceId);
+      // 3. 删除被合并的会话
+      this.db.prepare(`DELETE FROM activity_sessions WHERE id = ?`).run(sourceId);
 
-    // 4. 合并后重新派生 signals（合并体的事件集合已变，旧 signals 失效）
-    this.updateSessionSignals(targetId);
-    return true;
+      // 4. 合并后重新派生 signals（合并体的事件集合已变，旧 signals 失效）
+      // 放在事务内：它写的是同一个 target 行的 signals 字段，失败应一起回滚
+      this.updateSessionSignals(targetId);
+
+      this.db.exec("COMMIT;");
+      return true;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK;");
+      } catch {
+        // 回滚本身失败（如连接已坏）时保留原始错误，不要用回滚错误覆盖它
+      }
+      throw err;
+    }
   }
 
   /**
@@ -416,7 +451,7 @@ export class ActivityStore {
       // 解析失败时退回 app_name，不能让整条事件被丢掉。
       let bundleId: string | undefined;
       try {
-        const d = typeof ev.data === "string" ? JSON.parse(ev.data) : ev.data;
+        const d = typeof ev.data === "string" ? safeJsonParse<any>(ev.data, {}) : ev.data;
         if (d && typeof d === "object") bundleId = d.bundleId;
       } catch {
         // 忽略非法 JSON，走 app_name 兜底
@@ -721,7 +756,7 @@ export class ActivityStore {
       timestamp: r.timestamp,
       kind: r.kind,
       appName: r.app_name,
-      data: JSON.parse(r.data || "{}"),
+      data: safeJsonParse<any>(r.data, {}),
       createdAt: r.created_at
     }));
   }
@@ -870,33 +905,64 @@ export class ActivityStore {
     }));
   }
 
-  // App duration calculation per session
-  public perAppDurationsForSession(sessionId: string): Map<string, number> {
-    const events = this.listEvents(sessionId, 500);
+  /**
+   * 按 App 统计单会话内的停留时长。
+   *
+   * 原本用 listEvents(sessionId, 500)，超过 500 事件的会话尾部会被静默截断，
+   * 导致最后一个 App 的时长偏小甚至消失（实测单会话最长 1258 事件）。
+   * 这里改为一次性把需要的列捞全——只取 timestamp/kind/app_name，
+   * 不解析 data JSON，内存开销远小于“事件数无上限”的直觉印象。
+   *
+   * 关键约束：单段计入时长必须有上限（maxSliceMs）。
+   * 没有上限时，一个 App 只要在会话里“最后出现”，之后所有空白时间都记给它。
+   * 实测 2026-10-24：UserNotificationCenter 全天只有 10 次聚焦、分散在 01:41–12:12，
+   * 却被算出 44 分钟，直接挤进“主用 App”排行——而它只是系统通知面板。
+   * 上限取空闲阈值（默认 30s）：超过它说明用户已经离开这块屏幕，
+   * 这段时间不该归给任何 App，应该算作空闲。
+   */
+  public perAppDurationsForSession(sessionId: string, maxSliceMs?: number): Map<string, number> {
+    const events = this.db
+      .prepare(
+        `SELECT timestamp, kind, app_name FROM activity_events
+         WHERE session_id = ? ORDER BY timestamp ASC`
+      )
+      .all(sessionId) as any[];
     const session = this.getSession(sessionId);
     const totalMs = session?.durationMs ?? 0;
     const map = new Map<string, number>();
 
+    // 缺省上限 30s，与 config.idleThresholdMs 的默认值一致。
+    // 之所以在这里给默认值而不是强制传参：本方法是热路径，
+    // 且 store 层不该反向依赖 config 模块（会造成循环引用）。
+    const cap = maxSliceMs && maxSliceMs > 0 ? maxSliceMs : 30000;
+
+    // 事件过少的会话不能整段记给某个 App。
+    // 实测：一个只有 1 个 UserNotificationCenter 事件的会话被记了 4.5 分钟，
+    // 另一个同样只有 1 个事件的会话被记了 5.0 分钟，合计把系统通知面板
+    // 顶到“主用 App”第 2 名。真实可归属时长不会超过「事件数 × 单段上限」，
+    // 这里按事件数封顶，避免单事件会话吞掉整段会话时长。
     if (events.length === 0) {
       if (session?.appNames?.length) {
-        map.set(session.appNames[0], totalMs);
+        map.set(session.appNames[0], Math.min(totalMs, cap));
       }
       return map;
     }
 
-    let currentApp = events[0].appName || "Unknown";
+    let currentApp = events[0].app_name || "Unknown";
     let lastTs = events[0].timestamp;
 
     for (let i = 1; i < events.length; i++) {
       const ev = events[i];
-      const dur = Math.max(0, ev.timestamp - lastTs);
+      // 单段最多记 cap 毫秒：间隔超长说明用户已离开，余下时间不计给任何 App
+      const dur = Math.min(cap, Math.max(0, ev.timestamp - lastTs));
       map.set(currentApp, (map.get(currentApp) ?? 0) + dur);
-      if (ev.appName) currentApp = ev.appName;
+      if (ev.app_name) currentApp = ev.app_name;
       lastTs = ev.timestamp;
     }
 
     if (session?.endedAt) {
-      const rem = Math.max(0, session.endedAt - lastTs);
+      // 尾段同理：会话结束后到最后一个事件之间的空白不整段归给最后一个 App
+      const rem = Math.min(cap, Math.max(0, session.endedAt - lastTs));
       map.set(currentApp, (map.get(currentApp) ?? 0) + rem);
     }
 
@@ -956,7 +1022,7 @@ export class ActivityStore {
       kind: row.kind,
       dateKey: row.date_key,
       summary: row.summary,
-      stats: JSON.parse(row.stats || "{}"),
+      stats: safeJsonParse<any>(row.stats, {}),
       model: row.model,
       isPartial: row.is_partial === 1,
       createdAt: row.created_at,
@@ -971,7 +1037,7 @@ export class ActivityStore {
       endedAt: r.ended_at,
       durationMs: r.duration_ms,
       triggerKind: r.trigger_kind,
-      appNames: JSON.parse(r.app_names || "[]"),
+      appNames: safeJsonParse<any[]>(r.app_names, []),
       eventCount: r.event_count,
       snapshotCount: r.snapshot_count,
       totalBytes: r.total_bytes,
@@ -985,10 +1051,10 @@ export class ActivityStore {
       worthKnowledge: r.worth_knowledge === 1,
       isMeeting: r.is_meeting === 1,
       storageTier: r.storage_tier,
-      entities: JSON.parse(r.entities || "{}"),
-      topics: JSON.parse(r.topics || "[]"),
+      entities: safeJsonParse<Record<string, any[]>>(r.entities, {}),
+      topics: safeJsonParse<any[]>(r.topics, []),
       project: r.project,
-      highlights: JSON.parse(r.highlights || "[]"),
+      highlights: safeJsonParse<any[]>(r.highlights, []),
       signals: safeJsonParse(r.signals, {}),
       createdAt: r.created_at,
       updatedAt: r.updated_at

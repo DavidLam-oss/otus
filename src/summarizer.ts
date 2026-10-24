@@ -92,8 +92,8 @@ const OTUS_INSIGHTS_SYSTEM_PROMPT = `你是个人折腾日记的观察者。根�
   }
 ]
 
-- type: "good" 完成度高的推进, "warn" 曾卡住但有结论的尝试, "ai" 工具/提示词/自动化用法
-- tag: 2-6 字（如"高光闭环"、"调试策略"、"AI工具习惯"、"工程护栏"）
+- type: "good" 有明确产出的推进, "warn" 反复尝试后仍未闭合的环节, "ai" 工具/提示词/自动化用法
+- tag: 2-6 字，描述观察到的做法，不评价好坏（如"调试试探"、"版本对比"、"脚本化"、"文档同步"）
 - title: <= 25 字
 - content: 2-3 句（<= 160 字），可用 **粗体** 或 \`代码\`
 `;
@@ -306,7 +306,9 @@ export class ActivitySummarizer {
       const end = sess.endedAt || nowMs;
       if (start > 0) earliestStart = Math.min(earliestStart, start);
       if (end > 0) latestEnd = Math.max(latestEnd, end);
-      const perApp = this.store.perAppDurationsForSession(sess.id);
+      // 显式传空闲阈值作为单段上限：与切会话的判定口径保持一致，
+      // 超过这个间隔用户已经离开，不该把空白时间算给最后一个 App
+      const perApp = this.store.perAppDurationsForSession(sess.id, this.config.idleThresholdMs);
       for (const [app, ms] of perApp.entries()) {
         appDurations.set(app, (appDurations.get(app) || 0) + ms);
       }
@@ -1041,7 +1043,12 @@ ${JSON.stringify(chunk, null, 2)}`;
         if (merged.length) outcomes.push(`${merged.length} 个 PR 已合并`);
       }
       if (c.entities.versions?.length) {
-        const vers = c.entities.versions.map((v: any) => v.label).filter(Boolean);
+        // analyzer.ts 归一化后 versions 是 string[]（见 EntitiesV1 类型），
+        // 早期这里写的是 v.label，恒为 undefined，导致「涉及版本」从没显示过。
+        // 这里同时兼容字符串与旧的对象形态，避免历史数据/别的写入路径再次踩坑。
+        const vers = c.entities.versions
+          .map((v: any) => (typeof v === "string" ? v : v?.label ?? v?.version ?? v?.name))
+          .filter(Boolean);
         if (vers.length) outcomes.push(`涉及版本 ${vers.join("、")}`);
       }
       // commits 原先只入库、无消费方，等于白付 token，这里接进「成果」行。
@@ -1216,6 +1223,15 @@ ${JSON.stringify(chunk, null, 2)}`;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
+    // 脱敏：正文骨架里含 OCR 全文与窗口标题，是「屏幕上出现过的任何字」，
+    // 可能夹带密钥/Token。AGENTS.md 的铁律是「调用 LLM 前必须经过 redactor」，
+    // 此前这条通道漏了（单会话分析与全局主题归纳都已接上）。
+    const { redacted: safeBody, hits: bodyHits } = redactSensitiveText(body);
+    const hitKinds = Object.keys(bodyHits);
+    if (hitKinds.length > 0) {
+      console.log(`[ActivitySummarizer] 叙事阶段脱敏命中: ${hitKinds.join(", ")}`);
+    }
+
     let lastError: any;
     for (let attempt = 0; attempt <= 2; attempt++) {
       const controller = new AbortController();
@@ -1234,7 +1250,7 @@ ${JSON.stringify(chunk, null, 2)}`;
                 role: "user",
                 content: `以下是 ${dateKey} 当天的主题正文骨架（不含一级标题与全天统计行，这两部分由程序负责，你不要输出）。请按所有规则把它改写成第一人称日记正文，只保留二级标题及其下的内容。
 
-${body}`
+${safeBody}`
               }
             ],
             temperature: 0.3
@@ -1289,6 +1305,13 @@ ${body}`
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
 
+    // 脱敏：skeleton 同样来自 OCR 与窗口标题，必须与其它 LLM 通道对齐。
+    const { redacted: safeSkeleton, hits: skHits } = redactSensitiveText(skeleton);
+    const skKinds = Object.keys(skHits);
+    if (skKinds.length > 0) {
+      console.log(`[ActivitySummarizer] 洞察阶段脱敏命中: ${skKinds.join(", ")}`);
+    }
+
     try {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 45000);
@@ -1303,7 +1326,7 @@ ${body}`
               { role: "system", content: OTUS_INSIGHTS_SYSTEM_PROMPT },
               {
                 role: "user",
-                content: `今日全天数据：活跃时长 ${stats.totalActiveMinutes} 分钟，会话数 ${stats.sessionCount}，有效分析 ${stats.analyzedCount}，主用应用：${JSON.stringify(stats.topApps)}。\n\n活动骨架：\n${skeleton.slice(0, 3000)}`
+                content: `今日全天数据：活跃时长 ${stats.totalActiveMinutes} 分钟，会话数 ${stats.sessionCount}，有效分析 ${stats.analyzedCount}，主用应用：${JSON.stringify(stats.topApps)}。\n\n活动骨架：\n${safeSkeleton.slice(0, 3000)}`
               }
             ],
             temperature: 0.2
@@ -1339,34 +1362,22 @@ ${body}`
     const topApp = stats.topApps?.[0]?.app || "代码编辑器";
     const topAppMins = stats.topApps?.[0]?.minutes || 0;
 
+    // 兜底文案必须与 LLM 通道遵守同一套约束（AGENTS.md §3.5 第 3 条）：
+    // 只陈述可观测的事实与产出，不做人格或效率评判。
+    // 此前这里写的是「全天重度深耕」「形成了明确的开发闭环」「工程护栏」——
+    // 这些是对用户工作方式的评判与拔高，离线兜底时反而成了唯一的产出内容。
     fallback.push({
       type: "good",
-      tag: "主攻聚焦",
-      title: `全天重度深耕 ${topApp}`,
-      content: `今日在 **${topApp}** 累计投入超 ${topAppMins} 分钟，完成了 ${stats.analyzedCount || 0} 个有效推进会话，形成了明确的开发闭环。`
+      tag: "主要应用",
+      title: `${topApp} 用时最长`,
+      content: `今日在 **${topApp}** 累计 ${topAppMins} 分钟，全天共 ${stats.analyzedCount || 0} 个会话有分析结果。`
     });
 
-    if (stats.totalActiveMinutes >= 480) {
-      fallback.push({
-        type: "warn",
-        tag: "时长提醒",
-        title: `全天活跃 ${Math.round(stats.totalActiveMinutes / 60)} 小时`,
-        content: `累计活跃专注时长达 **${stats.totalActiveMinutes} 分钟**。`
-      });
-    } else {
-      fallback.push({
-        type: "good",
-        tag: "信噪比",
-        title: "闲置切片已过滤",
-        content: `有效折腾会话 ${stats.analyzedCount} 个，剔除 ${stats.filteredCount || 0} 个无操作闲置切片。`
-      });
-    }
-
     fallback.push({
-      type: "ai",
-      tag: "工程护栏",
-      title: "试错固化为脚本与规则",
-      content: `将高频试错与边界条件沉淀为脚本、类型规范或规则文档。`
+      type: "good",
+      tag: "会话分布",
+      title: `${stats.sessionCount || 0} 个会话`,
+      content: `${stats.filteredCount || 0} 个会话因无操作被过滤，其余 ${stats.sessionCount || 0} 个记入统计。`
     });
 
     return fallback;

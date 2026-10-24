@@ -107,12 +107,13 @@ export class ActivityAnalyzer {
     }
   }
 
-  public async runOnce(opts: { limit?: number; includeFailed?: boolean } = {}): Promise<{ processed: number; analyzed: number; failed: number }> {
-    if (this.running) return { processed: 0, analyzed: 0, failed: 0 };
+  public async runOnce(opts: { limit?: number; includeFailed?: boolean } = {}): Promise<{ processed: number; analyzed: number; failed: number; belowGate: number }> {
+    if (this.running) return { processed: 0, analyzed: 0, failed: 0, belowGate: 0 };
     this.running = true;
     let processed = 0;
     let analyzed = 0;
     let failed = 0;
+    let belowGate = 0;
 
     const limit = opts.limit ?? 20;
     try {
@@ -158,9 +159,10 @@ export class ActivityAnalyzer {
         const res = await this.analyzeSession(sess).catch((err) => {
           console.error(`[ActivityAnalyzer] Session ${sess.id} failed:`, err);
           failed++;
-          return "failed";
+          return "failed" as const;
         });
         if (res === "analyzed") analyzed++;
+        else if (res === "not_worth") belowGate++;
         // 错峰停顿 1 秒 (给大模型网关缓冲)
         await new Promise((r) => setTimeout(r, 1000));
       }
@@ -168,7 +170,7 @@ export class ActivityAnalyzer {
       this.running = false;
     }
 
-    return { processed, analyzed, failed };
+    return { processed, analyzed, failed, belowGate };
   }
 
   /**
@@ -223,10 +225,13 @@ export class ActivityAnalyzer {
       const nextShort = (next.durationMs || 0) < this.config.mergeMaxDurationMs;
       if (!prevShort && !nextShort) continue;
 
-      // 合并体总时长不得超过合并窗口，防止无限链式累积
+      // 合并体总跨度不得超过 mergeMaxSpanMs，防止无限链式累积成一大坨。
+      // 注意这里用独立的 mergeMaxSpanMs，不能复用 mergeGapMs：
+      // mergeGapMs 是「相邻两段的间隔」窗口（5 分钟），用它卡总跨度会让
+      // 两个 2.5 分钟的碎片就触边界，绝大多数正常碎片被跳过。
       const prevStart = chainStart.get(prev.id) ?? prev.startedAt;
       const nextEnd = next.endedAt ?? next.startedAt;
-      if (nextEnd - prevStart > this.config.mergeGapMs) continue;
+      if (nextEnd - prevStart > this.config.mergeMaxSpanMs) continue;
 
       // 会议会话保持独立
       if (prev.isMeeting || next.isMeeting) continue;
@@ -391,6 +396,17 @@ export class ActivityAnalyzer {
     return inter / (A.size + B.size - inter);
   }
 
+  /**
+   * 单会话分析。
+   *
+   * 返回值语义：
+   * - `"analyzed"`：本次真的调用了 LLM 并产出了分析结果；
+   * - `"not_worth"`：会话已被处理（落库标记），但没有送 LLM；
+   * - `"failed"`：本可分析但调用失败，等待重试。
+   *
+   * 前两者都算「已处理」，但只有 `"analyzed"` 能让 `runOnce` 的 `analyzed++` 生效——
+   * 否则终端上「已分析 N 个」会被低于质量门槛、根本没送审的会话虚假抬高。
+   */
   public async analyzeSession(session: ActivitySession): Promise<"analyzed" | "not_worth" | "failed"> {
     // 0. 质量前置过滤（对齐 Alma 的 processSession 门槛）
     // 与「交给 LLM 判 not_worth」不同：低于确定阈值时根本不该消耗 LLM 调用。
@@ -402,7 +418,7 @@ export class ActivityAnalyzer {
         description: "低于质量门槛，未送分析。",
         model: "quality-gate"
       });
-      return "analyzed";
+      return "not_worth";
     }
 
     // 1. 抽取该 session 的 OCR 抽稀片段

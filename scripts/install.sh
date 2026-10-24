@@ -23,12 +23,29 @@ cp -R "$PROJECT_DIR/src" "$APP_DIR/"
 cp "$PROJECT_DIR/tsconfig.json" "$APP_DIR/"
 chmod +x "$APP_DIR/bin/otus"
 
+# launchctl 现代/旧版双写：macOS 10.10+ 推荐 bootstrap/bootout，
+# 但 `load/unload` 至今仍可用，且 bootout 在“服务未加载”时返回非 0。
+# 因此统一用 `modern || legacy || true` 的写法，两边都试一遍，任何一边成功即可。
+LAUNCHD_LABEL="com.davidlin.otus"
+LAUNCHD_DOMAIN="gui/$(id -u)"
+
+unload_otus_daemon() {
+  launchctl bootout "$LAUNCHD_DOMAIN/$LAUNCHD_LABEL" 2>/dev/null \
+    || launchctl unload "$PLIST_DEST" 2>/dev/null \
+    || true
+}
+
+load_otus_daemon() {
+  launchctl bootstrap "$LAUNCHD_DOMAIN" "$PLIST_DEST" 2>/dev/null \
+    || launchctl load "$PLIST_DEST"
+}
+
 # 2. 停用旧服务
-launchctl unload "$PLIST_DEST" 2>/dev/null || true
+unload_otus_daemon
 
 # 3. 部署并加载 launchd plist
 cp "$PLIST_SRC" "$PLIST_DEST"
-launchctl load "$PLIST_DEST"
+load_otus_daemon
 
 # 4. 创建全局 CLI 软链接 (若 ~/.local/bin 在 PATH 中)
 if [ -d "$HOME/.local/bin" ]; then

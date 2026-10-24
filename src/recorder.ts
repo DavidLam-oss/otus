@@ -91,7 +91,10 @@ export class ActivityRecorderService {
 
   // 浏览器轮询连续失败计数，达到阈值后自禁用该 App 的轮询
   private browserPollFailures: Map<string, number> = new Map();
-  private browserPollDisabled: Set<string> = new Set();
+  // 被停用轮询的浏览器 -> 解禁时间戳。之前是 Set（永久停用），
+  // 一旦浏览器在启动初期短暂无响应或权限未就绪，整个 daemon 生命周期内
+  // 都不再采集它的 URL——重启 Otus 才能恢复。改成带冷却期的 Map。
+  private browserPollDisabledUntil: Map<string, number> = new Map();
 
   // OCR 降频：每 N 张快照才执行一次识别
   private snapshotsSinceLastOcr: number = 0;
@@ -988,11 +991,22 @@ export class ActivityRecorderService {
     if (!this.isBrowserFrontmost()) {
       return;
     }
-    // 该浏览器已因连续失败被停用
-    if (this.browserPollDisabled.has(this.frontmost.appName)) return;
+    // 该浏览器仍在冷却期内则跳过；冷却结束后自动恢复探测并重置计数
+    const cooldownUntil = this.browserPollDisabledUntil.get(this.frontmost.appName);
+    if (cooldownUntil !== undefined) {
+      if (Date.now() < cooldownUntil) return;
+      this.browserPollDisabledUntil.delete(this.frontmost.appName);
+      this.browserPollFailures.delete(this.frontmost.appName);
+      console.log(`[ActivityRecorder] 浏览器轮询对 ${this.frontmost.appName} 恢复尝试`);
+    }
 
+    // AppleScript 字符串字面量转义：只有 `"` 和 `\` 需要处理，且必须先转义反斜杠。
+    // 虽然 appName 目前受 isBrowserAppName 白名单约束（六个固定浏览器名），
+    // 但白名单用 includes 做子串匹配，理论上仍可能放进带引号的名字；
+    // 转义成本几乎为零，不做等于把正确性押在另一个函数上。
+    const safeAppName = this.frontmost.appName.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
     const script = `
-      tell application "${this.frontmost.appName}"
+      tell application "${safeAppName}"
         if (count of windows) > 0 then
           set currentTab to active tab of front window
           return (URL of currentTab) & "|||" & (title of currentTab)
@@ -1048,9 +1062,14 @@ export class ActivityRecorderService {
       const failures = (this.browserPollFailures.get(app) ?? 0) + 1;
       this.browserPollFailures.set(app, failures);
       if (failures >= 3) {
-        this.browserPollDisabled.add(app);
+        // 指数退避：2 → 4 → 8 → 16 → 32 分钟封顶。
+        // strikes 封顶在 5，避免长时间失败后 2^failures 爆炸。
+        const strikes = Math.min(failures - 2, 5); // 3次失败 -> 1, 4次 -> 2, ...
+        const cooldownMs = Math.min(2 * 60_000 * Math.pow(2, strikes - 1), 60 * 60_000);
+        this.browserPollDisabledUntil.set(app, Date.now() + cooldownMs);
         console.warn(
-          `[ActivityRecorder] 浏览器轮询已对 ${app} 停用（连续失败 ${failures} 次）：${String(err?.message || err).slice(0, 160)}`
+          `[ActivityRecorder] 浏览器轮询对 ${app} 暂停 ${Math.round(cooldownMs / 60000)} 分钟` +
+            `（连续失败 ${failures} 次）：${String(err?.message || err).slice(0, 160)}`
         );
       }
     }

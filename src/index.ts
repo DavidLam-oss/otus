@@ -39,12 +39,33 @@ function resolveDateKey(input?: string): string | undefined {
   return input;
 }
 
+/**
+ * 在途的「不可中断」异步任务计数。
+ *
+ * 停机时若直接 process.exit(0)，正在跑的 LLM 报告生成会被腰斩，
+ * 留下一个写了一半的 HTML 文件——而且因为文件已存在，下次可能被当成「已有报告」跳过。
+ * 这里登记这类任务，shutdown 时等它们收尾（上限 30 秒）再退出。
+ */
+let inflightCriticalTasks = 0;
+
+/** 包装一个不可中断任务：执行期间计数 +1，结束后 -1。 */
+function criticalTask<T>(fn: () => Promise<T>): Promise<T> {
+  inflightCriticalTasks++;
+  return fn().finally(() => {
+    inflightCriticalTasks--;
+  });
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0] || "status";
 
   const store = new ActivityStore(defaultConfig.dbPath);
 
+  // 长驻 daemon 分支退出时由操作系统回收，显式 close 反而可能打断未完成的写入。
+  // 其余一次性命令走 finally 主动关库，尽早释放 WAL 与文件句柄（见 store.close 注释）。
+  const isLongRunning = command === "daemon" || command === "start";
+  try {
   switch (command) {
     case "daemon":
     case "start": {
@@ -96,7 +117,8 @@ async function main() {
       const summarizer = new ActivitySummarizer(store, defaultConfig);
       const renderer = new ReportRenderer(store, defaultConfig);
 
-      const checkAndBackfillYesterdayReport = async () => {
+      const checkAndBackfillYesterdayReport = () =>
+        criticalTask(async () => {
         try {
           const now = new Date();
           const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
@@ -127,7 +149,7 @@ async function main() {
         } catch (err) {
           console.error("[Otus] Catch-up report generation error:", err);
         }
-      };
+        });
 
       // 1. 守护进程启动后延迟 5 秒检查一次昨日报告
       setTimeout(() => {
@@ -152,7 +174,7 @@ async function main() {
         // 每天 23:50 起自动触发当天的全天折腾终版报告（仅触发 1 次）
         if (hour === 23 && minute >= 50 && lastAutoReportDateKey !== today) {
           lastAutoReportDateKey = today;
-          renderer.renderHtmlReport(today, { force: true }).then(() => {
+          criticalTask(() => renderer.renderHtmlReport(today, { force: true })).then(() => {
             const summary = store.getSummary("daily", today);
             const stats = summary?.stats?.reportStats || {};
             sendDesktopNotification({
@@ -173,8 +195,10 @@ async function main() {
         }
       }, 60 * 1000);
 
-      const shutdown = () => {
+      const shutdown = async () => {
         console.log("\n[Otus] Graceful shutdown initiated...");
+        // 先停掉「会不断产生新活」的定时器与采集器，再等在途的报告任务收尾。
+        // 顺序不能反：先等任务但定时器还在，可能永远等不完。
         clearInterval(autoReportTimer);
         recorder.stop();
         analyzer.stop();
@@ -183,14 +207,28 @@ async function main() {
           try { menuProc.kill("SIGTERM"); } catch {}
         }
         try { execSync("pkill -f otus-menu-bar 2>/dev/null"); } catch {}
+
+        // 等待在途的关键任务（LLM 报告生成等）。上限 30 秒，
+        // 避免 LLM 卡死时 daemon 永远退不出去（launchd 会再补一个 SIGKILL，反而更糟）。
+        if (inflightCriticalTasks > 0) {
+          console.log(`[Otus] 等待 ${inflightCriticalTasks} 个在途报告任务完成（上限 30s）...`);
+          const deadline = Date.now() + 30_000;
+          while (inflightCriticalTasks > 0 && Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 200));
+          }
+          if (inflightCriticalTasks > 0) {
+            console.warn(`[Otus] 仍有 ${inflightCriticalTasks} 个任务未完成，超时强制退出`);
+          }
+        }
+
         try {
           if (fs.existsSync(PID_FILE)) fs.unlinkSync(PID_FILE);
         } catch {}
         process.exit(0);
       };
 
-      process.on("SIGINT", shutdown);
-      process.on("SIGTERM", shutdown);
+      process.on("SIGINT", () => { void shutdown(); });
+      process.on("SIGTERM", () => { void shutdown(); });
       break;
     }
 
@@ -288,6 +326,7 @@ async function main() {
       let totalProcessed = 0;
       let totalAnalyzed = 0;
       let totalFailed = 0;
+      let totalBelowGate = 0;
 
       while (true) {
         // 指定日期时跑到底（当天全部分析完），否则沿用原来的单批/--all 语义。
@@ -295,12 +334,16 @@ async function main() {
         totalProcessed += res.processed;
         totalAnalyzed += res.analyzed;
         totalFailed += res.failed;
+        totalBelowGate += res.belowGate;
 
         if (res.processed === 0 || (!all && !dateKey)) break;
         console.log(`[Otus] Progress: ${totalAnalyzed} analyzed, ${totalProcessed} processed...`);
       }
 
-      console.log(`[Otus] Done. Analyzed: ${totalAnalyzed}, Processed: ${totalProcessed}, Failed: ${totalFailed}`);
+      // belowGate 单独列出：这些会话落了库但没送 LLM，
+      // 混进 analyzed 会让「已分析 N 个」虚高，用户在报告里找不到对应内容。
+      const gateNote = totalBelowGate > 0 ? `, Below gate (未送 LLM): ${totalBelowGate}` : "";
+      console.log(`[Otus] Done. Analyzed: ${totalAnalyzed}, Processed: ${totalProcessed}, Failed: ${totalFailed}${gateNote}`);
       break;
     }
 
@@ -547,6 +590,11 @@ Commands:
   test-capture        Take an immediate snapshot & test native Vision OCR
       `);
       break;
+    }
+  }
+  } finally {
+    if (!isLongRunning) {
+      try { store.close(); } catch {}
     }
   }
 }

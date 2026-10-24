@@ -79,9 +79,9 @@ echo "  完成"
 # 4. 重启
 echo ""
 echo "[4/4] 重启 daemon..."
-run "launchctl unload '$PLIST_DEST' 2>/dev/null || true"
+run "launchctl bootout 'gui/$(id -u)/com.davidlin.otus' 2>/dev/null || launchctl unload '$PLIST_DEST' 2>/dev/null || true"
 run "sleep 1"
-run "launchctl load '$PLIST_DEST'"
+run "launchctl bootstrap 'gui/$(id -u)' '$PLIST_DEST' 2>/dev/null || launchctl load '$PLIST_DEST'"
 run "sleep 2"
 
 if $DRY_RUN; then
@@ -93,6 +93,6 @@ fi
 
 echo ""
 echo "回滚命令："
-echo "  launchctl unload $PLIST_DEST"
+echo "  launchctl bootout gui/\$(id -u)/com.davidlin.otus 2>/dev/null || launchctl unload $PLIST_DEST"
 echo "  rsync -a --delete $BACKUP_DIR/src/ $APP_SRC/"
-echo "  launchctl load $PLIST_DEST"
+echo "  launchctl bootstrap gui/\$(id -u) $PLIST_DEST 2>/dev/null || launchctl load $PLIST_DEST"

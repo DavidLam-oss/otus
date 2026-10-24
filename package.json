@@ -15,7 +15,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "engines": {
-    "node": ">=22.0.0"
+    "node": ">=26.0.0"
   },
   "license": "MIT"
 }

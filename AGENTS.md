@@ -73,11 +73,12 @@ Otus 里已有的判据：
 | `OTUS_ANALYZER_SYSTEM_PROMPT` | 用户**实际产出了什么** | ✅ 已写入提示词 |
 | `OTUS_THEME_SYSTEM_PROMPT` | 用户**实际产出了什么** | ✅ 已写入提示词 |
 | `OTUS_NARRATIVE_SYSTEM_PROMPT` | 忠实叙述事实，不加工 | ✅ 已写入（措辞为「严格的事实边界」） |
-| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 只基于给定事实做推断 | ⚠️ 未写入，待补 |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 用户今天**实际是怎么用工具的** | ✅ 已写入提示词 |
 
-`OTUS_INSIGHTS_SYSTEM_PROMPT` 目前的口吻要求（「犀利、直击要害」）与 3.5 第 3 条
-「不做人格或效率评判」**存在冲突**，尚未解决。补判据时要一并处理：
-判据应是「用户今天实际怎么用工具的」，而不是「用户今天效率如何」。
+**已解决的冲突（2026-10-24）**：`OTUS_INSIGHTS_SYSTEM_PROMPT` 此前要求口吻「犀利、
+直击要害」，与 3.5 第 3 条「不做人格或效率评判」矛盾。现已统一为「用户今天实际
+怎么用工具的」，并把 type 的 `"warn"` 从「曾卡住」改为中性的「反复尝试后仍未闭合
+的环节」，tag 示例也从「高光闭环」「工程护栏」这类拔高词换成可观测的做法描述。
 
 ### 3.2 用示例替代规则堆叠
 
@@ -117,10 +118,13 @@ for (const f of ["src/analyzer.ts","src/summarizer.ts"]) {
 
 | 提示词 | 行数 | 字符 | 唯一判据 |
 | :--- | ---: | ---: | :--- |
-| `OTUS_ANALYZER_SYSTEM_PROMPT` | 68 | 2363 | 实际产出了什么 |
+| `OTUS_ANALYZER_SYSTEM_PROMPT` | 67 | 2498 | 实际产出了什么 |
 | `OTUS_THEME_SYSTEM_PROMPT` | 49 | 1447 | 实际产出了什么 |
 | `OTUS_NARRATIVE_SYSTEM_PROMPT` | 18 | 633 | 忠实叙述事实，不加工 |
-| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 18 | 448 | ⚠️ 待补（见 3.1 说明） |
+| `OTUS_INSIGHTS_SYSTEM_PROMPT` | 23 | 469 | 实际是怎么用工具的 |
+
+> ⚠️ `OTUS_ANALYZER_SYSTEM_PROMPT` 已到 **2498 / 2500 字符**，只剩 2 字符余量。
+> 下一次要加任何内容，都必须先做等量或更多的删减。
 
 ### 3.5 改动提示词后的验证流程
 

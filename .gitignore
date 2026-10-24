@@ -35,6 +35,7 @@ node_modules/
 # Local planning, process notes and research docs
 docs/
 *.scratch.*
+review.md
 
 # Compiled native binaries
 bin/*

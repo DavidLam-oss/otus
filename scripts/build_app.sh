@@ -90,7 +90,9 @@ EOF
 
 # 4. 同步应用源码与二进制
 echo "[3/4] Packaging application files..."
-rsync -a --exclude ".*" --exclude "docs" --exclude "archive" "$SOURCE_DIR/" "$APP_DIR/"
+rsync -a --exclude ".*" --exclude "docs" --exclude "archive" \
+  --exclude "node_modules" --exclude "*.md" \
+  "$SOURCE_DIR/" "$APP_DIR/"
 
 # 预编译所有 Swift 原生组件
 mkdir -p "$APP_DIR/bin"
@@ -100,6 +102,44 @@ swiftc -O "$SOURCE_DIR/native/browser-tab.swift" -o "$APP_DIR/bin/otus-browser-t
 swiftc -O "$SOURCE_DIR/native/img-diff.swift" -o "$APP_DIR/bin/otus-diff"
 swiftc -O "$SOURCE_DIR/native/perms-check.swift" -o "$APP_DIR/bin/otus-perms"
 swiftc -O "$SOURCE_DIR/native/menu-bar.swift" -o "$APP_DIR/bin/otus-menu-bar"
+
+# window-title 不能只是裸二进制：AX（辅助功能）权限在 macOS 上绑定 bundle 身份，
+# 裸命令行二进制拿不到稳定的 AX 授权，AppleSystemPolicy 甚至会直接 SIGKILL。
+# 因此要把 Swift 源码编译进一个带 Info.plist 的最小 .app，并对整个 bundle 做 adhoc 签名。
+# 之前这里漏了这一步，从 dmg 安装后会退化成运行时首次触发再源码重编（且用户若没装
+# Command Line Tools，那一步会直接失败）。
+WT_APP="$APP_DIR/bin/OtusWindowTitle.app"
+WT_MACOS="$WT_APP/Contents/MacOS"
+mkdir -p "$WT_MACOS"
+swiftc -O "$SOURCE_DIR/native/window-title.swift" -o "$WT_MACOS/OtusWindowTitle"
+cat > "$WT_APP/Contents/Info.plist" << 'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key><string>OtusWindowTitle</string>
+    <key>CFBundleIdentifier</key><string>com.davidlin.otus.window-title</string>
+    <key>CFBundleName</key><string>OtusWindowTitle</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSBackgroundOnly</key><true/>
+    <key>LSUIElement</key><true/>
+    <key>NSSupportsAutomaticTermination</key><true/>
+    <key>NSSupportsSuddenTermination</key><true/>
+</dict>
+</plist>
+PLIST
+# 清掉 com.apple.provenance 扩展属性，否则 AppleSystemPolicy 会在内核层直接 SIGKILL
+xattr -cr "$WT_APP" 2>/dev/null || true
+codesign --force --deep -s - "$WT_APP" 2>/dev/null || true
+
+# 其余裸二进制同样需要清 provenance + adhoc 重签名，否则部分文件上会偶发
+# "load code signature error 2" 直接被系统杀掉。
+for b in otus-ocr otus-input-monitor otus-browser-tab otus-diff otus-perms otus-menu-bar; do
+  xattr -c "$APP_DIR/bin/$b" 2>/dev/null || true
+  codesign --force -s - "$APP_DIR/bin/$b" 2>/dev/null || true
+done
 
 # 5. 写入启动二进制
 echo "[4/4] Creating launcher binary..."

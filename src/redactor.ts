@@ -48,7 +48,19 @@ export const REDACTION_RULES: RedactionRule[] = [
     kind: "JWT_TOKEN",
     regex: /\beyJ[A-Za-z0-9-_]{15,}\.[A-Za-z0-9-_]{15,}\.[A-Za-z0-9-_]{15,}\b/g
   },
-  // 8. 通用 NAME=VALUE / NAME: VALUE 形式的密钥赋值（如 WAFFO_PRIVATE_KEY=deadbeef、api_key: xxx）。
+  // 8. Stripe 等 sk_live_ / sk_test_ 形态（不是 `sk-` 前缀，第 2 条规则漏掉）
+  {
+    kind: "STRIPE_KEY",
+    regex: /\bsk_(?:live|test)_[A-Za-z0-9]{16,}\b/g
+  },
+  // 9. 带账号密码的数据库/服务 URL：scheme://user:password@host
+  //    这是 OCR 里最常见的一类凭据泄漏（终端里的 DATABASE_URL、redis:// 等），
+  //    只遮蔽密码段，保留用户名与主机，便于事后定位又不泄漏凭据。
+  {
+    kind: "URL_CREDENTIALS",
+    regex: /\b([a-z][a-z0-9+.-]*:\/\/[^:/\s@]+:)([^@\s/]{3,})(@)/gi
+  },
+  // 10. 通用 NAME=VALUE / NAME: VALUE 形式的密钥赋值（如 WAFFO_PRIVATE_KEY=deadbeef、api_key: xxx）。
   //    变量名须含 KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL/PRIVATE 等敏感词，值至少 8 位不含空白的串。
   //    用分组回溯保留「变量名 + 赋值符」，只遮蔽值本身，尽量不破坏语句结构。
   {
@@ -71,6 +83,10 @@ export function redactSensitiveText(text: string): { redacted: string; hits: Rec
       // groups 参数位于末尾，可能带 trailing offset/string；取第一个捕获组。
       if (rule.kind === "SECRET_ASSIGN" && typeof args[1] === "string") {
         return `${args[1]}[REDACTED:${rule.kind}]`;
+      }
+      if (rule.kind === "URL_CREDENTIALS" && typeof args[1] === "string") {
+        // 保留 `scheme://user:` 与 `@host`，只遮蔽密码本身
+        return `${args[1]}[REDACTED:${rule.kind}]${args[3] ?? "@"}`;
       }
       return `[REDACTED:${rule.kind}]`;
     });

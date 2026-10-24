@@ -70,6 +70,7 @@ export interface OtusConfig {
   mergeGapMs: number;
   // 可参与合并的短碎片时长上限：超过该时长的会话视为完整活动单元，不参与合并
   mergeMaxDurationMs: number;
+  mergeMaxSpanMs: number;
 
   // HAC 聚类的切割距离（= 1 - 余弦相似度 + 时间惩罚）。越小越易并簇。
   clusterCutDistance: number;
@@ -121,7 +122,9 @@ export const baseConfig: OtusConfig = {
   binDir: BIN_DIR,
   tmpDir: TMP_DIR,
   maxStorageBytes: 10 * 1024 * 1024 * 1024,   // 10GB 磁盘存储硬上限
-  targetStorageBytes: 7.5 * 1024 * 1024 * 1024, // 8GB 水位（Alma floor(8053063680)）
+  // 7.5GiB = 8053063680 字节，与 Alma 的清理水位完全一致。
+  // 注意别写成「8GB」：GiB 与 GB 差 7%，且这个值是照抄 Alma 的字节数，不是凑整。
+  targetStorageBytes: 8053063680,
 
   // 三级生命周期（对齐 Alma Vq：hotRetentionMs / warmRetentionMs / coldRetentionMs）
   hotRetentionMs: 86400000,      // 1 天：原图
@@ -177,6 +180,10 @@ export const baseConfig: OtusConfig = {
   ocrEveryN: 3,                   // 每 3 张快照才执行一次 OCR（对齐 Alma，降低 Vision 开销）
   mergeGapMs: 300000,             // 5 分钟内的相邻同类会话在分析前合并（对齐 Alma）
   mergeMaxDurationMs: 180000,     // 3 分钟以内的会话视为碎片，可参与合并
+  // 合并体总跨度上限。必须与 mergeGapMs（相邻间隔窗口）区分开：
+  // 之前用 mergeGapMs 同时卡总跨度，导致「两个 2.5 分钟碎片」就已超 5 分钟边界，
+  // 大量本该合并的会话被静默跳过。15 分钟足够把一串碎片收拢成一段有意义的活动。
+  mergeMaxSpanMs: 900000,
 
   clusterCutDistance: 0.62,       // HAC 切割距离（相似度≈0.38 以上倾向同簇）
   clusterTimeBeta: 0.25,          // 时间连续性弱惩罚权重（封顶）
@@ -289,6 +296,8 @@ function clampConfig(cfg: OtusConfig): OtusConfig {
     // 合并窗口：过小则形同虚设，过大可能把不相关工作拼在一起
     mergeGapMs: roundTo(cfg.mergeGapMs, 300000, 60000, 1800000),
     mergeMaxDurationMs: roundTo(cfg.mergeMaxDurationMs, 180000, 30000, 1800000),
+    // 跨度必须 >= 间隔窗口，否则语义上自相矛盾（间隔内能连、连起来却超跨度）
+    mergeMaxSpanMs: roundTo(cfg.mergeMaxSpanMs, 900000, 60000, 3600000),
     // HAC 聚类参数：切割距离 [0.3, 0.9]、时间惩罚 β [0, 0.6]、τ [5min, 4h]
     clusterCutDistance: clampFloat(cfg.clusterCutDistance, 0.62, 0.3, 0.9),
     clusterTimeBeta: clampFloat(cfg.clusterTimeBeta, 0.25, 0, 0.6),
