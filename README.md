@@ -17,7 +17,7 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 
 桌面伴侣软件 Alma 提供了极富创意的记录与复盘理念，但在日常使用中，官方应用往往捆绑了庞大的 Electron 渲染框架、聊天界面、长驻子进程与可观的资源开销。**Otus 将其软件中这套最具价值的“后台静默记录与日终折腾复盘”核心链路独立抽取出来，基于 macOS 原生技术栈进行了彻底的重新实现——算是一种吸收、借鉴与极简重构。**
 
-我们彻底舍弃了前端重型外壳与无谓开销，做到了真正的 **0 外部 NPM 依赖**、**常驻内存 ~40MB**、**待机 CPU 0.0%** 的单二进制极客基线版本。
+我们彻底舍弃了前端重型外壳与无谓开销，做到了真正的 **0 外部 NPM 依赖**、**常驻内存 ~22MB**（实测 5 个进程合计，主 daemon 仅 8MB）、**待机 CPU 0.0%**。
 
 ---
 
@@ -25,14 +25,17 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 
 | 核心模块 | 设计定位 | Otus 原生实现细节 |
 | :--- | :--- | :--- |
-| **持久化存储** | SQLite 5 表时序模型 | `activity_sessions` / `snapshots` / `ocr_frames` / `events` / `summaries`，基于 Node 26 原生 `node:sqlite`（开启 WAL），**0 外部 NPM 依赖** |
-| **事件感知** | 低开销系统事件监听 | 原生 Swift 编译二进制（`otus-input-monitor`），通过 Cocoa Global Monitor 捕获按键停顿、点击、窗口焦点切换与锁屏休眠 |
-| **屏幕捕获与 OCR** | 差分判重与离线光学识别 | 原生 `screencapture -x -C` 静音抓拍 + 32-bin 归一化灰度直方图巴氏距离过滤微变静止帧 + Apple Vision 框架精准离线 OCR |
-| **浏览器穿透** | 活跃标签智能感知 | 原生常驻 AppleScript 进程，毫秒级读取 Chrome、Safari 等活跃标签 URL 与页面标题 |
-| **微会话分析** | 异步微会话切分与实体抽取 | 异步状态机会话切分，精准提取 Project、Topics、Highlights 与结构化 Entities（PR/Issue/Commit） |
-| **日终复盘引擎** | 智能聚类与第一人称叙事 | **零 Token 本地 Jaccard 聚类算法**（相似度 $\ge 0.18$）生成结构化 Markdown 骨架 + 严苛防幻觉 Hard Rules 深度润色 |
+| **持久化存储** | SQLite 5 表时序模型 | `activity_sessions` / `activity_snapshots` / `activity_ocr_frames` / `activity_events` / `activity_summaries`，基于 Node 原生 `node:sqlite`（开启 WAL 与 `busy_timeout=5000`），**0 外部 NPM 依赖** |
+| **事件感知** | 低开销系统事件监听 | 原生 Swift 编译二进制（`otus-input-monitor`），通过 Cocoa Global Monitor 捕获按键停顿、点击、窗口焦点切换与锁屏休眠；内置 30s 前台 App 定期采样（见「长任务活跃判定」） |
+| **屏幕捕获与判重** | 三级差分过滤微变静止帧 | 原生 `screencapture -x -C` 静音抓拍 + **三级判重**：① MD5 全等快筛 → ② 32-bin 归一化灰度直方图巴氏距离（<5% 视为静止）→ ③ 160×90 内存缩略图像素容差比对（<2% 视为静止）。判重用独立缩略图，与落盘分辨率无关 |
+| **离线 OCR** | 本地光学识别 | Apple Vision 框架精准离线 OCR，含**相似度 0.9 去重**（同一画面多帧只留一条，避免重复喂 LLM 浪费 token） |
+| **窗口标题采集** | 浏览器 + 原生 App 双通道 | 浏览器走常驻 AppleScript 读活跃标签 URL 与标题；非浏览器应用通过独立的 `OtusWindowTitle.app`（AXTitle，按需请求不轮询）读取前台窗口标题，含失败退避与进程自愈 |
+| **长任务活跃判定** | 人不动也算在干活 | 三路激活任一成立即视为活跃：① 真实键鼠输入 → ② 画面发生实质变化后 2 分钟窗口内 → ③ 前台为任务型 App 白名单（AI Agent / IDE / 终端等）。解决「盯着 Agent 长跑任务但不动鼠标，会话被反复切断」 |
+| **微会话切分** | 异步切分与实体抽取 | 异步状态机会话切分 + 质量前置门槛（过短、过疏的会话直接跳过不烧 token）+ 相邻碎片合并，精准提取 Project、Topics、Highlights 与结构化 Entities（PR/Issue/Commit/Repos/Versions） |
+| **切换质量分析** | 区分「回访」与「探索」 | 统计 `revisitSwitches`（切回本次已用过的 App，属工具链切换）与 `newAppSwitches`（首次进入新 App，属探索/打断），避免多 App 协作的高频切换被误判成注意力碎片化 |
+| **日终复盘引擎** | 数学聚类 + LLM 叙事 | **HAC 凝聚层次聚类**（average linkage，`cutDistance` 0.62 即相似度 ≈0.38 倾向同簇）+ **TF-IDF 向量**，簇内要点用 **MMR 边际相关性**去重；LLM 不可用时回退字符 bigram Jaccard。全程遵循防幻觉 Hard Rules |
 | **心流热力图** | 全天 180 格心流矩阵 | 完整渲染 07:00–22:00（15×12=180 格）GitHub 绿阶心流矩阵、小时专注雷达与任务占比图 |
-| **磁盘生命周期** | 磁盘自愈与自动轮转 | 自动轮转管理快照存储（默认 10GB 磁盘硬上限），过期大图自动 FIFO 清理，结构化元数据永久归档 SQLite |
+| **磁盘生命周期** | 三级轮转与容量兜底 | **hot** 1 天保留原图（2560 宽 / 质量 55，实测均值约 250KB/张）→ **warm** 7 天后重压至 1280×720@40 → **cold** 30 天后重压至 640×360@30 → 超期删文件保留 OCR 文本。容量超 **10GiB** 时按时间从旧到新清理至 **7.5GiB** 水位，结构化元数据永久归档 SQLite |
 
 ---
 
@@ -40,15 +43,15 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 
 ### 方式 1：下载预编译 DMG 安装包（推荐）
 
-1. 前往 [GitHub Releases](https://github.com/DavidLam-oss/otus/releases) 下载最新的 `Otus-Installer.dmg`（仅 ~6MB）；
+1. 前往 [GitHub Releases](https://github.com/DavidLam-oss/otus/releases) 下载最新的 `Otus-Installer.dmg`（实测 ~17MB，解压后应用约 18MB）；
 2. 双击打开镜像，将 `Otus.app` 拖入 `Applications`（应用程序）文件夹；
 3. 从 Launchpad 或「应用程序」中启动 Otus，即可在 macOS 顶部菜单栏看到常驻夜枭图标。
 
 > [!IMPORTANT]
 > **关于 macOS Gatekeeper 安全门禁与权限授予说明：**
-> 
+>
 > 由于开源项目未购买苹果年费开发者证书，macOS 首次打开可能会提示「无法打开，因为无法验证开发者」或「已损坏」。这是 macOS 对未签名开源软件的默认安全策略，请按以下指引正常开启：
-> 
+>
 > 1. **首次绕过 Gatekeeper**：
 >    - **访达右键打开（最简）**：在「访达」->「应用程序」中，**按住 Control 键点按（或右键）`Otus.app` -> 选择【打开】**，在弹出的系统确认框中点击【打开】即可。后续系统将永久信任，双击即可直接秒开；
 >    - **或终端极客一键**：在终端执行以下命令直接移除隔离标记：
@@ -58,18 +61,20 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 > 2. **系统权限授予（屏幕录制与辅助功能）**：
 >    首次启动时，系统会提示授权，请在「系统设置 -> 隐私与安全性」中开启：
 >    - **屏幕录制**：用于后台静默定期抓拍微会话与离线 OCR（图像仅在本地内存与 SQLite 处理，绝不上报）；
->    - **辅助功能**：用于感知应用焦点切换、按键停顿与空闲检测。
->    *(注：macOS 权限是与应用 Bundle ID `com.davidlin.otus` 绑定的，未签名完全不影响权限的正常获取与持久化)*
+>    - **辅助功能**：用于感知应用焦点切换、按键停顿与空闲检测，以及读取前台窗口标题（AXTitle）。
+>
+>    *(注：macOS 权限是与应用 Bundle ID `com.davidlin.otus` 绑定的，未签名完全不影响权限的正常获取与持久化。`OtusWindowTitle.app` 是 Otus 的子进程，会继承主应用的辅助功能授权，无需在权限列表中单独勾选)*
 
 ---
 
 ### 方式 2：从源码快速上手与本地构建
 
-### 环境要求
-- macOS 13+ (Apple Silicon / Intel)
-- Node.js >= 22 (推荐 Node 26，内置 `node:sqlite` 与 `--experimental-strip-types`)
+#### 环境要求
 
-### 基础命令行调用
+- macOS 13+ (Apple Silicon / Intel)
+- **Node.js >= 26**（主路径强依赖原生 `node:sqlite` 与 `--experimental-strip-types`）
+
+#### 基础命令行调用
 
 ```bash
 # 1. 查看当前守护进程状态与今日统计
@@ -78,7 +83,7 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 # 2. 单次测试当前屏幕抓拍与 Apple Vision OCR
 ./bin/otus test-capture
 
-# 3. 运行未分析会话的微小结处理
+# 3. 运行未分析会话的微会话处理
 ./bin/otus analyze
 
 # 4. 实时查看今日个人折腾日记（终端 Markdown 渲染）
@@ -86,6 +91,12 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 
 # 5. 导出并自动在浏览器中打开今日 180 槽位 GitHub 绿阶心流报告
 ./bin/otus export
+
+# 6. 打开最近一次导出的 HTML 报告
+./bin/otus open-latest
+
+# 7. 回填存量会话的行为信号（新增信号字段后对历史数据生效）
+./bin/otus recompute-signals 30
 ```
 
 ---
@@ -100,6 +111,10 @@ Otus 的初衷源于对开发者日常技术探索与专注心流记录的真实
 
 # 查看服务运行状态
 ./bin/otus status
+
+# 卸载后台守护服务
+./scripts/uninstall.sh
+```
 
 ### 自动报告生成机制 (Scheduled Reporting)
 
@@ -159,6 +174,7 @@ otus config set report gpt-4o
 如果你使用支持 Agent 技能规范的 AI 编程助手（如 Google Antigravity、Claude Code、Cursor 等），AI 可以直接读取你本地的 Otus SQLite 数据库，像真人搭档一样理解你当天的研发轨迹，并进行**双向交互式技术复盘**：
 
 ### 常用提问姿势：
+
 - 💬 **全天回顾**：*“我今天干了些啥？”* / *“生成今天的技术复盘”*
 - 💬 **昨日追溯**：*“昨天我折腾了什么？”* / *“回顾昨天的日报”*
 - 💬 **专项排查**：*“我今天在调试某个报错时是怎么解决的？帮我总结排坑笔记”*
@@ -168,5 +184,21 @@ AI 会遵循标准的设计规范，自动为你渲染符合 Apple HIG 风格的
 
 ---
 
+## 🛠️ 参与开发
+
+```bash
+# 类型检查（首次需装类型依赖，不会写进 package.json 的 dependencies）
+npm i --no-save --no-package-lock typescript@5 @types/node@22
+npm run typecheck
+
+# 改完代码后同步到已安装的 Otus.app 并重启 daemon（会自动重建 Swift 二进制）
+./scripts/sync.sh
+```
+
+开发约定与架构约束详见 [`AGENTS.md`](AGENTS.md)。
+
+---
+
 ## 📄 License
+
 MIT © David Lin
