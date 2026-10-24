@@ -1,25 +1,23 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-let SQLiteClass: any;
-try {
-  const mod = await import("node:sqlite");
-  SQLiteClass = mod.DatabaseSync;
-} catch {
-  const mod = await import("bun:sqlite");
-  SQLiteClass = class extends mod.Database {
-    exec(sql: string) { return (this as any).run(sql); }
-    prepare(sql: string) {
-      const stmt = (this as any).query(sql);
-      return {
-        run: (...args: any[]) => stmt.run(...args),
-        get: (...args: any[]) => stmt.get(...args),
-        all: (...args: any[]) => stmt.all(...args)
-      };
-    }
-  };
-}
+/**
+ * 之前这里有一段 `node:sqlite` → `bun:sqlite` 的 try/catch 降级，已移除。
+ *
+ * 移除理由：
+ * 1. 它不通向任何真实可运行路径。`package.json` 的启动脚本是
+ *    `node --experimental-strip-types`，`--experimental-strip-types` 是 Node 专属
+ *    flag，Bun 不认，所以 Bun 下连进程都起不来，这个 fallback 永远执行不到。
+ * 2. 它兜不住任何错误。Node 里 `import("bun:sqlite")` 会再抛一次
+ *    `Cannot find module 'bun:sqlite'`，把「node:sqlite 加载失败」这个真实原因
+ *    盖成一条误导性的报错。
+ * 3. 运行时基线是 Node 26+（AGENTS.md §2.2），`node:sqlite` 必然存在。
+ *
+ * 注意 `ActivityStore.db` 仍标为 `any`：`node:sqlite` 是实验性 API，
+ * 各小版本的类型形状还在变，标注具体类型会让升级 Node 时产生大量无关报错。
+ */
 
 /** 安全解析 JSON：失败或空返回默认值，避免脏数据中断整表读取。 */
 function safeJsonParse<T>(raw: any, fallback: T): T {
@@ -115,7 +113,7 @@ export class ActivityStore {
 
   constructor(dbPath: string) {
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-    this.db = new SQLiteClass(dbPath);
+    this.db = new DatabaseSync(dbPath);
     this.initTables();
   }
 
