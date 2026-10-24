@@ -1,0 +1,69 @@
+name: check
+
+# 只守三件事：类型能过、Swift 能编、没偷偷加 npm 依赖。
+# 真正的业务逻辑（录屏 / OCR / LLM）在 CI 里跑不了——需要屏幕录制权限和真实数据，
+# 所以不做 e2e，也不追求覆盖率。这里的目标是「改坏了有人拦」。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # native/*.swift 全部 import Cocoa，只能在 macOS runner 上编。
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 断言零外部依赖
+        # AGENTS.md §2.2：package.json 不得出现 dependencies。
+        # 这是项目的核心卖点，被无意破坏时要立刻发现。
+        run: |
+          node -e '
+            const p = require("./package.json");
+            const deps = Object.keys(p.dependencies || {});
+            if (deps.length) {
+              console.error(`发现外部依赖：${deps.join(", ")}`);
+              console.error("Otus 的硬约束是 0 外部 NPM 依赖，请移除后再提交。");
+              process.exit(1);
+            }
+            console.log("OK：无外部 NPM 依赖");
+          '
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+
+      - name: 安装类型检查依赖
+        # 不写进 package.json；--no-save 保证工作区不被改动。
+        run: npm i --no-save --no-package-lock typescript@5 @types/node@22
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: Swift 全部编译
+        run: |
+          set -e
+          mkdir -p /tmp/otus-swift
+          fail=0
+          for f in native/*.swift; do
+            n=$(basename "$f" .swift)
+            if swiftc -O "$f" -o "/tmp/otus-swift/$n" 2>"/tmp/otus-swift/$n.err"; then
+              echo "OK    $n"
+            else
+              echo "FAIL  $n"
+              cat "/tmp/otus-swift/$n.err"
+              fail=1
+            fi
+          done
+          exit $fail
+
+      - name: 数学自测
+        # scripts/test-math.mjs 已在失败时 process.exit(1)，可直接当测试用。
+        run: node --experimental-strip-types scripts/test-math.mjs
