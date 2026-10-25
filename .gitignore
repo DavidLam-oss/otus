@@ -42,3 +42,6 @@ bin/*
 !bin/otus
 # Distribution packages
 *.dmg
+
+# 代码安全扫描工具的本地状态（含运行时缓存与索引，非源码）
+.code-security/
