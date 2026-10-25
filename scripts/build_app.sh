@@ -102,6 +102,7 @@ swiftc -O "$SOURCE_DIR/native/browser-tab.swift" -o "$APP_DIR/bin/otus-browser-t
 swiftc -O "$SOURCE_DIR/native/img-diff.swift" -o "$APP_DIR/bin/otus-diff"
 swiftc -O "$SOURCE_DIR/native/perms-check.swift" -o "$APP_DIR/bin/otus-perms"
 swiftc -O "$SOURCE_DIR/native/menu-bar.swift" -o "$APP_DIR/bin/otus-menu-bar"
+swiftc -O "$SOURCE_DIR/native/display-focus.swift" -o "$APP_DIR/bin/otus-display-focus"
 
 # window-title 不能只是裸二进制：AX（辅助功能）权限在 macOS 上绑定 bundle 身份，
 # 裸命令行二进制拿不到稳定的 AX 授权，AppleSystemPolicy 甚至会直接 SIGKILL。
@@ -136,7 +137,7 @@ codesign --force --deep -s - "$WT_APP" 2>/dev/null || true
 
 # 其余裸二进制同样需要清 provenance + adhoc 重签名，否则部分文件上会偶发
 # "load code signature error 2" 直接被系统杀掉。
-for b in otus-ocr otus-input-monitor otus-browser-tab otus-diff otus-perms otus-menu-bar; do
+for b in otus-ocr otus-input-monitor otus-browser-tab otus-diff otus-perms otus-menu-bar otus-display-focus; do
   xattr -c "$APP_DIR/bin/$b" 2>/dev/null || true
   codesign --force -s - "$APP_DIR/bin/$b" 2>/dev/null || true
 done
