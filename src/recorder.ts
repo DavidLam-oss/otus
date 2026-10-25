@@ -120,6 +120,11 @@ export class ActivityRecorderService {
   private browserTabBinPath: string = "";
   private imgDiffBinPath: string = "";
   private windowTitleBinPath: string = "";
+  // 多屏焦点判定：无状态、按需 spawn 的短命进程（见 native/display-focus.swift）
+  private displayFocusBinPath: string = "";
+  // 上次探测到的屏幕数量。仅用于「从单屏切到多屏」时清空判重状态，
+  // 避免同一块屏因 -D 编号变化而导致 prevSnapshotPath 指向另一块屏的旧图。
+  private lastKnownScreenCount: number = 1;
 
   // 窗口标题辅助进程（AXTitle）：按需请求，不自己轮询
   private windowTitleProc: ChildProcess | null = null;
@@ -337,6 +342,7 @@ export class ActivityRecorderService {
     this.inputMonitorBinPath = path.join(this.config.binDir, "otus-input-monitor");
     this.browserTabBinPath = path.join(this.config.binDir, "otus-browser-tab");
     this.imgDiffBinPath = path.join(this.config.binDir, "otus-diff");
+    this.displayFocusBinPath = path.join(this.config.binDir, "otus-display-focus");
     // 窗口标题二进制：必须放在一个最小 .app bundle 内部。
     // 原因（macOS 实测）：裸的 adhoc 命令行二进制，即使被用户手动加入「辅助功能」，
     // 也常因 Gatekeeper / TCC 的 bundle 身份识别不稳定而拿不到 AX 权限，甚至被
@@ -368,6 +374,7 @@ export class ActivityRecorderService {
     compile("input-monitor.swift", this.inputMonitorBinPath);
     compile("browser-tab.swift", this.browserTabBinPath);
     compile("img-diff.swift", this.imgDiffBinPath);
+    compile("display-focus.swift", this.displayFocusBinPath);
 
     // 构建 window-title 的 .app bundle：先 compile 到 app 内 MacOS 路径，再补 Info.plist 并签名整个 bundle。
     const wtSrc = path.join(nativeDir, "window-title.swift");
@@ -769,6 +776,53 @@ export class ActivityRecorderService {
     }, this.config.typingPauseMs);
   }
 
+  /**
+   * 判定本次截图应该抓哪块屏（多屏场景下跟随焦点窗口）。
+   *
+   * 判定顺序（与 native/display-focus.swift 一致，这里不再重复 AX 逻辑）：
+   *   ① 单屏 → 1，不 spawn 任何进程；
+   *   ② AX 焦点窗口中心点命中的屏幕；
+   *   ③ AX 不可用时回退到鼠标所在屏幕；
+   *   ④ 最终回退主屏。
+   *
+   * 性能：spawn 一个短命二进制约 10~20ms，只在「即将截图」时调用一次，
+   * 被现有防抖去抖到 ≥snapshotDebounceMs，不会常驻、不轮询。
+   * 任何失败（二进制缺失 / 超时 / JSON 坏）都返回 display=1，绝不阻塞截图主流程。
+   */
+  private resolveCaptureDisplay(): { display: number; screens: number; source: string } {
+    const fallback = { display: 1, screens: this.lastKnownScreenCount, source: "fallback" };
+    if (!this.displayFocusBinPath || !fs.existsSync(this.displayFocusBinPath)) return fallback;
+
+    try {
+      const out = execSync(`"${this.displayFocusBinPath}"`, {
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 1500,
+        encoding: "utf-8"
+      }).trim();
+      const parsed = JSON.parse(out) as {
+        display?: number;
+        screens?: number;
+        source?: string;
+        totalWidth?: number;
+      };
+      const display = Number.isInteger(parsed.display) && (parsed.display as number) >= 1 ? (parsed.display as number) : 1;
+      const screens = Number.isInteger(parsed.screens) && (parsed.screens as number) >= 1 ? (parsed.screens as number) : 1;
+
+      // 屏幕数量变化（插拔显示器）时清空判重状态：
+      // 单屏 0→ 1 个文件是主屏，多屏后 -D2 是另一块屏，两者像素完全不同，
+      // 拿旧的 prevSnapshotPath 比对必然判定"有变化"，且历史 -D 编号已失效。
+      if (screens !== this.lastKnownScreenCount) {
+        console.log(`[ActivityRecorder] 屏幕数量变化 ${this.lastKnownScreenCount} → ${screens}，重置判重基线`);
+        this.prevHashHex = null;
+        this.prevSnapshotPath = null;
+        this.lastKnownScreenCount = screens;
+      }
+      return { display, screens, source: parsed.source ?? "unknown" };
+    } catch {
+      return fallback;
+    }
+  }
+
   // 抓拍与 OCR 执行
   public async maybeCapture(trigger: string, opts: { dedupOnly?: boolean } = {}): Promise<void> {
     if (!this.isRunning || this.screenLocked || this.isSensitiveAppFocused()) return;
@@ -789,7 +843,15 @@ export class ActivityRecorderService {
     const tmpPath = path.join(this.config.tmpDir, `cap_${Date.now()}.jpg`);
     try {
       // 1. 系统原生静音截图
-      execSync(`screencapture -x -C -t jpg "${tmpPath}"`, { stdio: "ignore" });
+      //
+      // 多屏策略：只截「用户此刻在操作的那块屏」（跟随焦点窗口，AX 不可用时回退鼠标所在屏）。
+      //   - 单屏时 -D 省略，行为与历史版本完全一致（display-focus 走 single 快速路径，不碰 AX）；
+      //   - 多屏时用 -D<n> 指定 NSScreen.screens 顺序（实测 -D1 即主屏）。
+      //   ⚠️ 不能用 screencapture 的多文件名模式：那会为每块屏各出一张图，
+      //      而本方法只消费 tmpPath 一个文件，第二块屏会被静默丢弃。
+      const focus = this.resolveCaptureDisplay();
+      const displayArg = focus.display >= 2 ? `-D${focus.display} ` : "";
+      execSync(`screencapture -x -C ${displayArg}-t jpg "${tmpPath}"`, { stdio: "ignore" });
       if (!fs.existsSync(tmpPath)) return;
 
       // 1.1 压缩策略：macOS 原生 sips 等比缩放至最大 2560 宽、质量 55（对齐 Alma）。
