@@ -17,6 +17,30 @@ export function getLocalDateKey(date: Date = new Date()): string {
   return `${year}-${month}-${day}`;
 }
 
+/**
+ * 判据：这个「应用名」是否代表用户正在使用的某个应用？
+ *
+ * 锁屏、屏保、登录窗口都不是用户在使用的东西，它们只是时间边界——屏幕在这期间
+ * 是锁着或熄灭的。屏幕锁定时截图仍在产生，recorder 会把前台进程记成 loginwindow，
+ * 于是它会作为 appNames[0] 混进会话，进而污染「最高时长应用」这类统计。
+ *
+ * 注意：这只回答「算不算一个应用」，不回答「算不算在干活」。后者是
+ * `config.taskAppWhitelist` 的职责（recorder 活跃判定），两者不要合并。
+ */
+const NON_USER_APPS = new Set(["loginwindow", "screensaverengine", "lockscreen", "screensaver"]);
+
+export function isUserApp(appName: string | null | undefined): boolean {
+  return !NON_USER_APPS.has((appName || "").toLowerCase());
+}
+
+/**
+ * 从会话的 appNames 里取第一个「真实应用」，锁屏类占位名会被跳过。
+ * 全部都是占位名（例如整段都在锁屏）时返回 fallback。
+ */
+export function firstUserApp(appNames: string[] | null | undefined, fallback = "Desktop"): string {
+  return (appNames || []).find((a) => isUserApp(a)) || fallback;
+}
+
 export interface OtusConfig {
   outputDir: string;
   dbPath: string;

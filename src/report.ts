@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { ActivityStore } from "./store.ts";
 import { ActivitySummarizer } from "./summarizer.ts";
-import { defaultConfig, getLocalDateKey } from "./config.ts";
+import { defaultConfig, getLocalDateKey, isUserApp, firstUserApp } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 
 const PALETTE = [
@@ -72,7 +72,7 @@ export class ReportRenderer {
     const analyzedSessions = allSessions.filter((s) => {
       if (s.analysisStatus !== "analyzed") return false;
       const app = (s.appNames[0] || "").toLowerCase();
-      if (["loginwindow", "screensaverengine", "lockscreen", "screensaver"].includes(app)) return false;
+      if (!isUserApp(app)) return false;
       const title = (s.analysisTitle || "").toLowerCase();
       if (title.startsWith("loginwindow") || title.startsWith("idle /") || title.includes("系统锁屏闲置")) return false;
       return true;
@@ -195,7 +195,9 @@ export class ReportRenderer {
 
     const liveAppDurations = new Map<string, number>();
     for (const sess of allSessions) {
-      const app = sess.appNames[0] || "Desktop";
+      // 取第一个非锁屏的 appName：锁屏期间会话的 appNames[0] 会是 loginwindow，
+      // 但它只是时间边界，不是用户在用应用。真实应用在数组后续元素里。
+      const app = firstUserApp(sess.appNames);
       liveAppDurations.set(app, (liveAppDurations.get(app) || 0) + (sess.durationMs || 0));
     }
     const liveTopAppEntry = [...liveAppDurations.entries()].sort((a, b) => b[1] - a[1])[0];

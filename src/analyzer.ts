@@ -1,6 +1,6 @@
 import { ActivityStore } from "./store.ts";
 import type { ActivitySession } from "./store.ts";
-import { defaultConfig } from "./config.ts";
+import { defaultConfig, isUserApp } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 import { redactSensitiveText } from "./redactor.ts";
 
@@ -529,16 +529,12 @@ export class ActivityAnalyzer {
     reason: string
   ): "analyzed" | "not_worth" {
     // 过滤出有意义的应用（剔除锁屏、屏保系统进程）
-    const realApps = session.appNames.filter(
-      (a) => !["loginwindow", "ScreenSaverEngine", "LockScreen", "ScreenSaver"].includes(a)
-    );
+    const realApps = session.appNames.filter(isUserApp);
     const topApp = realApps[0] || "系统环境";
     const sampleOcr = ocrSnippets[0] || "";
 
     // 过滤条件：无任何实质应用、无输入事件且无有效 OCR 内容，或者包含锁屏
-    const hasLockScreen = session.appNames.some((a) =>
-      ["loginwindow", "ScreenSaverEngine", "LockScreen", "ScreenSaver"].includes(a)
-    );
+    const hasLockScreen = session.appNames.some((a) => !isUserApp(a));
     const isIdle =
       hasLockScreen ||
       realApps.length === 0 ||

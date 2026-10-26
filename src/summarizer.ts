@@ -1,6 +1,6 @@
 import { ActivityStore } from "./store.ts";
 import type { ActivitySession } from "./store.ts";
-import { defaultConfig, getLocalDateKey } from "./config.ts";
+import { defaultConfig, getLocalDateKey, isUserApp } from "./config.ts";
 import type { OtusConfig } from "./config.ts";
 import { tokenize, tfidf, cosine, hacCluster, mmrSelect } from "./math-utils.ts";
 import { redactSensitiveText } from "./redactor.ts";
@@ -230,7 +230,7 @@ export class ActivitySummarizer {
     const analyzedSessions = allSessions.filter((s) => {
       if (s.analysisStatus !== "analyzed" || !s.analysisTitle) return false;
       const app = (s.appNames[0] || "").toLowerCase();
-      if (["loginwindow", "screensaverengine", "lockscreen", "screensaver"].includes(app)) return false;
+      if (!isUserApp(app)) return false;
       const title = (s.analysisTitle || "").toLowerCase();
       if (title.startsWith("loginwindow") || title.startsWith("idle /") || title.includes("系统锁屏闲置")) return false;
       return true;
