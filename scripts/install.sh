@@ -2,26 +2,21 @@
 set -e
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP_DIR="$HOME/.otus/app"
 PLIST_NAME="com.davidlin.otus.plist"
 PLIST_SRC="$PROJECT_DIR/launchd/$PLIST_NAME"
 PLIST_DEST="$HOME/Library/LaunchAgents/$PLIST_NAME"
 
 echo "==> [Otus] Installing background service..."
 
-# 1. 确保目录并同步代码到 ~/.otus/app (避开 macOS ~/Documents 的 TCC 权限限制)
+# 1. 准备目录
+#
+# 这里**不再**把代码复制到 ~/.otus/app。
+# 原因：复制出的是一份静态快照，之后仓库怎么改都不会同步过去——
+# 曾经因此出现过 `otus` 命令跑了 8 天前的代码、报告修复「看不出效果」的假象。
+# 现在 launchd 直接执行 /Applications/Otus.app 内的代码，CLI 软链指向仓库，
+# 两者都只有一个真实来源，见下方第 4 步。
 mkdir -p "$HOME/.otus"
-mkdir -p "$APP_DIR"
 mkdir -p "$HOME/Library/LaunchAgents"
-
-cp -R "$PROJECT_DIR/assets" "$APP_DIR/"
-cp -R "$PROJECT_DIR/bin" "$APP_DIR/"
-cp -R "$PROJECT_DIR/launchd" "$APP_DIR/"
-cp -R "$PROJECT_DIR/native" "$APP_DIR/"
-cp "$PROJECT_DIR/package.json" "$APP_DIR/"
-cp -R "$PROJECT_DIR/src" "$APP_DIR/"
-cp "$PROJECT_DIR/tsconfig.json" "$APP_DIR/"
-chmod +x "$APP_DIR/bin/otus"
 
 # launchctl 现代/旧版双写：macOS 10.10+ 推荐 bootstrap/bootout，
 # 但 `load/unload` 至今仍可用，且 bootout 在“服务未加载”时返回非 0。
@@ -47,10 +42,15 @@ unload_otus_daemon
 cp "$PLIST_SRC" "$PLIST_DEST"
 load_otus_daemon
 
-# 4. 创建全局 CLI 软链接 (若 ~/.local/bin 在 PATH 中)
+# 4. 创建全局 CLI 软链接，指向仓库本体（而不是代码副本）
+#
+# daemon 由 launchd 从 /Applications/Otus.app 启动（见 launchd/*.plist），
+# CLI 直接跑仓库源码。两者各有唯一来源，改完代码后：
+#   - `otus` 命令立即生效
+#   - daemon 需要重新 build_app.sh 并重启 launchctl
 if [ -d "$HOME/.local/bin" ]; then
-  ln -sf "$APP_DIR/bin/otus" "$HOME/.local/bin/otus"
-  echo "==> CLI linked to $HOME/.local/bin/otus"
+  ln -sf "$PROJECT_DIR/bin/otus" "$HOME/.local/bin/otus"
+  echo "==> CLI linked to $HOME/.local/bin/otus -> $PROJECT_DIR/bin/otus"
 fi
 
 echo "==> [Otus] Daemon loaded successfully!"
