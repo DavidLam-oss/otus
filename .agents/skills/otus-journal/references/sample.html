@@ -913,64 +913,84 @@ hmMatrix.innerHTML = mHtml;
 
 // ---- 4. 渲染右侧「心流雷达（根据全天实际 Activity 动态聚合专注节律）」 ----
 const phaseList = document.getElementById('phaseList');
-const activeBlocks = [];
-let blockStart = -1;
-let blockLastActive = -1;
-let blockActiveMins = 0;
 
-for (let i = 0; i < nSlots; i++) {
-  if (grid[i] > 0) {
-    if (blockStart === -1) {
-      blockStart = i;
-      blockActiveMins = grid[i];
-    } else {
-      // 若距上一个活跃格间隔 <= 40 分钟 (8 个格)，继续视为同一时段
-      if (i - blockLastActive <= 8) {
-        blockActiveMins += grid[i];
-      } else {
-        // 间隔超 40 分钟，闭合前一时段
-        if (blockActiveMins >= 15) {
-          activeBlocks.push({ start: blockStart, end: blockLastActive, activeMins: Math.round(blockActiveMins) });
-        }
-        blockStart = i;
-        blockActiveMins = grid[i];
-      }
-    }
-    blockLastActive = i;
+// 统计 07:00 之前与 22:00 之后（超出标准 15 小时矩阵）的极端边缘活跃度
+let earlyMins = 0;
+let earlyStart = '';
+let earlyEnd = '';
+let lateMins = 0;
+let lateStart = '';
+let lateEnd = '';
+
+rawSlots.forEach(([h, m, v]) => {
+  const tStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  if (h < START) {
+    earlyMins += v;
+    if (!earlyStart) earlyStart = tStr;
+    earlyEnd = tStr;
+  } else if (h >= END) {
+    lateMins += v;
+    if (!lateStart) lateStart = tStr;
+    lateEnd = tStr;
   }
-}
-if (blockStart !== -1 && blockActiveMins >= 15) {
-  activeBlocks.push({ start: blockStart, end: blockLastActive, activeMins: Math.round(blockActiveMins) });
+});
+
+// 自然生理与工作时段划分
+const PHASES = [
+  { name: '晨间攻坚', startH: 7, endH: 12 },
+  { name: '午间推进', startH: 12, endH: 14 },
+  { name: '午后深潜', startH: 14, endH: 18 },
+  { name: '晚间创作', startH: 18, endH: 22 }
+];
+
+const activePhases = [];
+
+if (earlyMins >= 10) {
+  activePhases.push({ name: '凌晨沉浸', tStart: earlyStart, tEnd: earlyEnd, activeMins: Math.round(earlyMins), ratio: 100 });
 }
 
-if (activeBlocks.length === 0) {
-  phaseList.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:12px 0;">今日暂无超过 15 分钟的连续心流时段</div>`;
+PHASES.forEach((p) => {
+  const startSlot = (p.startH - START) * SPH;
+  const endSlot = (p.endH - START) * SPH;
+  let activeMins = 0;
+  let firstActive = -1;
+  let lastActive = -1;
+
+  for (let i = startSlot; i < endSlot; i++) {
+    if (grid[i] > 0) {
+      activeMins += grid[i];
+      if (firstActive === -1) firstActive = i;
+      lastActive = i;
+    }
+  }
+
+  if (activeMins >= 10 && firstActive !== -1 && lastActive !== -1) {
+    const [tStart] = slotToTimeRange(firstActive);
+    const [, tEnd] = slotToTimeRange(lastActive);
+    const spanMins = Math.max(10, (lastActive - firstActive + 1) * 5);
+    const ratio = Math.min(100, Math.round((activeMins / spanMins) * 100));
+    activePhases.push({ name: p.name, tStart, tEnd, activeMins: Math.round(activeMins), ratio });
+  }
+});
+
+if (lateMins >= 10) {
+  activePhases.push({ name: '深夜冲刺', tStart: lateStart, tEnd: lateEnd, activeMins: Math.round(lateMins), ratio: 100 });
+}
+
+if (activePhases.length === 0) {
+  phaseList.innerHTML = `<div style="color:var(--dim);font-size:12px;padding:12px 0;">今日暂无超过 10 分钟的连续心流时段</div>`;
 } else {
-  // 取前 4 个主要专注块
-  activeBlocks.slice(0, 4).forEach((b) => {
-    const [tStart] = slotToTimeRange(b.start);
-    const [, tEnd] = slotToTimeRange(b.end);
-    const spanMins = Math.max(15, (b.end - b.start + 1) * 5);
-    const ratio = Math.min(100, Math.round((b.activeMins / spanMins) * 100));
-    const startH = START + Math.floor(b.start / SPH);
-
-    let name = '专注攻坚';
-    if (startH < 12) name = '晨间攻坚';
-    else if (startH < 14) name = '午间推进';
-    else if (startH < 18) name = '午后深潜';
-    else if (startH < 21) name = '晚间创作';
-    else name = '深夜冲刺';
-
-    const color = ratio >= 75 ? 'var(--good)' : ratio >= 50 ? 'var(--accent)' : 'var(--warn)';
+  activePhases.slice(0, 5).forEach((p) => {
+    const color = p.ratio >= 75 ? 'var(--good)' : p.ratio >= 50 ? 'var(--accent)' : 'var(--warn)';
 
     phaseList.insertAdjacentHTML('beforeend', `
       <div class="phase-item">
         <div class="phase-top">
-          <span><span class="phase-name">${name}</span><span class="phase-time">${tStart}–${tEnd}</span></span>
-          <span class="phase-val">${b.activeMins}m 活跃 (${ratio}%)</span>
+          <span><span class="phase-name">${p.name}</span><span class="phase-time">${p.tStart}–${p.tEnd}</span></span>
+          <span class="phase-val">${p.activeMins}m 活跃 (${p.ratio}%)</span>
         </div>
         <div class="phase-bar">
-          <div class="phase-fill" style="width:${ratio}%;background:${color}"></div>
+          <div class="phase-fill" style="width:${p.ratio}%;background:${color}"></div>
         </div>
       </div>
     `);

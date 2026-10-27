@@ -195,10 +195,18 @@ export class ReportRenderer {
 
     const liveAppDurations = new Map<string, number>();
     for (const sess of allSessions) {
-      // 取第一个非锁屏的 appName：锁屏期间会话的 appNames[0] 会是 loginwindow，
-      // 但它只是时间边界，不是用户在用应用。真实应用在数组后续元素里。
-      const app = firstUserApp(sess.appNames);
-      liveAppDurations.set(app, (liveAppDurations.get(app) || 0) + (sess.durationMs || 0));
+      const perApp = this.store.perAppDurationsForSession(sess.id, this.config.idleThresholdMs);
+      if (perApp.size > 0) {
+        for (const [app, ms] of perApp.entries()) {
+          if (!isUserApp(app)) continue;
+          liveAppDurations.set(app, (liveAppDurations.get(app) || 0) + ms);
+        }
+      } else {
+        const app = firstUserApp(sess.appNames);
+        if (isUserApp(app)) {
+          liveAppDurations.set(app, (liveAppDurations.get(app) || 0) + (sess.durationMs || 0));
+        }
+      }
     }
     const liveTopAppEntry = [...liveAppDurations.entries()].sort((a, b) => b[1] - a[1])[0];
     const liveTopAppName = liveTopAppEntry ? liveTopAppEntry[0] : (stats.topApps?.[0]?.app || "Desktop");
